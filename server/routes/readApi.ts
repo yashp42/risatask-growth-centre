@@ -1449,10 +1449,69 @@ export function createReadApiRouter(
     })
   );
 
+  router.get(
+    '/reference/assets',
+    authMiddleware,
+    resolveReadRoles,
+    asyncHandler(async (req: Request, res: Response) => {
+      const roles = req.resolvedMember?.roles ?? [];
+      const canReadAssets =
+        evaluatePermission(roles, 'contracts_lines', 'read').allowed ||
+        evaluatePermission(roles, 'opportunities_stage', 'read').allowed ||
+        evaluatePermission(roles, 'targets_rules_scenarios_metrics', 'read').allowed;
+      if (!canReadAssets) {
+        throw new AppApiError(403, 'FORBIDDEN', 'Role lacks permission to read inventory assets.');
+      }
+
+      const { editionId, requestedRecordClass } = parseEditionAndClass(
+        req,
+        config.editionIdDefault
+      );
+      const editionCtx = await resolveEditionContext(
+        dbState,
+        editionId,
+        requestedRecordClass
+      );
+      const pool = ensurePool(dbState);
+      const qRes = await wrapDb(
+        pool.query<Record<string, unknown>>(
+          `SELECT asset_id, edition_id, asset_type, slots_total, deliverables,
+                  is_premium, record_class
+             FROM public.inventory_asset
+            WHERE edition_id = $1
+              AND NOT is_deleted
+            ORDER BY asset_type, asset_id`,
+          [editionCtx.edition_id]
+        )
+      );
+      res.status(200).json({
+        edition_id: editionCtx.edition_id,
+        record_class: editionCtx.record_class,
+        assets: qRes.rows.map((r) => ({
+          ...r,
+          slots_total: toNum(r.slots_total),
+          is_premium: Boolean(r.is_premium),
+        })),
+      });
+    })
+  );
+
   // ---------------------------------------------------------------------------
   // 6. GET /api/team & GET /api/team-members
   // ---------------------------------------------------------------------------
   const handleGetTeam = asyncHandler(async (req: Request, res: Response) => {
+    const roles = req.resolvedMember?.roles ?? [];
+    const canReadTeam =
+      roles.includes('admin') ||
+      evaluatePermission(roles, 'targets_rules_scenarios_metrics', 'read').allowed;
+    if (!canReadTeam) {
+      throw new AppApiError(
+        403,
+        'FORBIDDEN',
+        'Role lacks permission to read team members.'
+      );
+    }
+
     const { editionId, requestedRecordClass } = parseEditionAndClass(
       req,
       config.editionIdDefault
@@ -1462,6 +1521,10 @@ export function createReadApiRouter(
       editionId,
       requestedRecordClass
     );
+    const roleEditionId =
+      editionCtx.record_class === 'historical_synthetic'
+        ? config.editionIdDefault
+        : editionCtx.edition_id;
     const pool = ensurePool(dbState);
 
     const qRes = await wrapDb(
@@ -1469,19 +1532,40 @@ export function createReadApiRouter(
         member_id: string;
         full_name: string;
         email: string | null;
+        auth_linked: boolean;
         fte_share: string | number | null;
         active_from: Date | string | null;
         active_to: Date | string | null;
         is_active: boolean;
         record_class: string;
         roles: string[] | null;
+        role_assignments: Array<{
+          role_assignment_id: string;
+          role: string;
+          edition_id: string;
+          valid_from: string | null;
+        }> | null;
       }>(
-        `SELECT tm.member_id, tm.full_name, tm.email, tm.fte_share,
+        `SELECT tm.member_id, tm.full_name, tm.email,
+                (tm.auth_user_id IS NOT NULL) AS auth_linked,
+                tm.fte_share,
                 tm.active_from, tm.active_to, tm.is_active, tm.record_class,
                 COALESCE(
                   array_agg(DISTINCT ra.role) FILTER (WHERE ra.role IS NOT NULL),
                   ARRAY[]::text[]
-                ) AS roles
+                ) AS roles,
+                COALESCE(
+                  json_agg(
+                    json_build_object(
+                      'role_assignment_id', ra.role_assignment_id,
+                      'role', ra.role,
+                      'edition_id', ra.edition_id,
+                      'valid_from', ra.valid_from
+                    )
+                    ORDER BY ra.valid_from DESC, ra.role_assignment_id
+                  ) FILTER (WHERE ra.role_assignment_id IS NOT NULL),
+                  '[]'::json
+                ) AS role_assignments
            FROM public.team_member tm
            LEFT JOIN public.role_assignment ra
              ON ra.member_id = tm.member_id
@@ -1493,7 +1577,7 @@ export function createReadApiRouter(
             AND NOT tm.is_deleted
           GROUP BY tm.member_id
           ORDER BY tm.full_name, tm.member_id`,
-        [editionCtx.record_class, config.editionIdDefault]
+        [editionCtx.record_class, roleEditionId]
       )
     );
 
@@ -1502,12 +1586,16 @@ export function createReadApiRouter(
       member_id: row.member_id,
       full_name: row.full_name,
       email: profile.redactPii ? null : row.email,
+      auth_linked: Boolean(row.auth_linked),
       fte_share: toNum(row.fte_share),
       active_from: toIsoDateOnly(row.active_from),
       active_to: toIsoDateOnly(row.active_to),
       is_active: Boolean(row.is_active),
       record_class: row.record_class,
       roles: row.roles ?? [],
+      role_assignments: Array.isArray(row.role_assignments)
+        ? row.role_assignments
+        : [],
     }));
 
     res.status(200).json({
@@ -1522,14 +1610,12 @@ export function createReadApiRouter(
     '/team',
     authMiddleware,
     resolveReadRoles,
-    requireReadDomain('targets_rules_scenarios_metrics'),
     handleGetTeam
   );
   router.get(
     '/team-members',
     authMiddleware,
     resolveReadRoles,
-    requireReadDomain('targets_rules_scenarios_metrics'),
     handleGetTeam
   );
 
@@ -3123,6 +3209,7 @@ export function createReadApiRouter(
       const { actorMemberId, profile } = getScopeProfile(req);
       const pool = ensurePool(dbState);
       const sponsorId = getQueryString(req, 'sponsor_id', 'sponsorId');
+      const opportunityId = getQueryString(req, 'opportunity_id', 'opportunityId');
       const params: unknown[] = [editionCtx.edition_id, editionCtx.record_class];
       const where = [
         'o.edition_id = $1',
@@ -3134,6 +3221,10 @@ export function createReadApiRouter(
       if (sponsorId) {
         params.push(sponsorId);
         where.push(`o.sponsor_id = $${params.length}`);
+      }
+      if (opportunityId) {
+        params.push(opportunityId);
+        where.push(`c.opportunity_id = $${params.length}`);
       }
       if (profile.contractsScope === 'own') {
         params.push(actorMemberId);
@@ -3789,9 +3880,9 @@ export function createReadApiRouter(
     })
   );
 
-  // Explicit 404 for unknown non-GET on newly introduced read-only resource names
+  // Explicit 405 for unknown non-GET on newly introduced read-only resource names
   router.all(
-    ['/editions', '/gates', '/rules', '/network-partners'],
+    ['/editions', '/gates', '/rules'],
     authMiddleware,
     (_req: Request, res: Response) => {
       sendJsonError(

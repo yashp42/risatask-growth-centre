@@ -97,13 +97,20 @@ export function mapPgErrorToAppError(err: unknown): AppApiError {
     pgCode === '23502' ||
     pgCode === '23503' ||
     pgCode === '23505' ||
-    pgCode === '23514'
+    pgCode === '23514' ||
+    pgCode === '23P01' ||
+    pgCode === 'P0001'
   ) {
-    return new AppApiError(
-      422,
-      'CONSTRAINT_VIOLATION',
-      sanitizePgConstraintMessage(rawMessage) || 'Record violates a database constraint.'
-    );
+    const cleanMsg =
+      sanitizePgConstraintMessage(rawMessage) ||
+      'Record violates a database constraint.';
+    if (
+      pgCode === 'P0001' &&
+      /historical_synthetic|read-only/i.test(cleanMsg)
+    ) {
+      return new AppApiError(403, 'READ_ONLY_RECORD', cleanMsg);
+    }
+    return new AppApiError(422, 'CONSTRAINT_VIOLATION', cleanMsg);
   }
 
   if (

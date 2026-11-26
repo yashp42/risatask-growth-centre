@@ -9,7 +9,10 @@ import { loadServerConfig } from './server/config.ts';
 import { closeDatabasePool, createDatabasePool } from './server/db.ts';
 import { apiErrorHandler, sendJsonError } from './server/errors.ts';
 import { createFoundationApiRouter } from './server/routes/foundation.ts';
+import { createFinanceAndTeamApiRouter } from './server/routes/financeAndTeamApi.ts';
 import { createReadApiRouter } from './server/routes/readApi.ts';
+import { createWriteApiRouter } from './server/routes/writeApi.ts';
+import { createAiApiRouter } from './server/routes/aiApi.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,8 +41,24 @@ async function startServer(): Promise<void> {
   });
 
   app.use('/api', express.json({ limit: '1mb' }));
+  const { router: aiRouter, openrouter: openrouterClient } = createAiApiRouter(
+    config,
+    dbState,
+    authDeps
+  );
   app.use('/api', createReadApiRouter(config, dbState, authDeps));
-  app.use('/api', createFoundationApiRouter(config, dbState, authDeps));
+  app.use('/api', createWriteApiRouter(config, dbState, authDeps));
+  app.use('/api', createFinanceAndTeamApiRouter(config, dbState, authDeps));
+  app.use('/api', aiRouter);
+  app.use(
+    '/api',
+    createFoundationApiRouter(config, dbState, authDeps, async () =>
+      (await openrouterClient.getHealthSnapshot(false)) as unknown as Record<
+        string,
+        unknown
+      >
+    )
+  );
   app.use('/api', apiErrorHandler);
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'NOT_FOUND' });

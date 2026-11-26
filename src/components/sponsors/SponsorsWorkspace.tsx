@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSeason } from '../../contexts/SeasonContext';
 import { isHistoricalReadOnlyEdition } from '../../lib/dateIst';
@@ -39,6 +40,7 @@ export function SponsorsWorkspace({
   onOpenCampaign,
 }: SponsorsWorkspaceProps) {
   const { editionId, recordClass, setEditionAndClass } = useSeason();
+  const queryClient = useQueryClient();
 
   const [filters, setFilters] = useState<SponsorDirectoryFilters>(() => ({
     search: '',
@@ -195,7 +197,8 @@ export function SponsorsWorkspace({
   const invalidateAll = useCallback(() => {
     setPreviewMode('default');
     setReloadNonce((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
 
   const categoryOptions = useMemo<FilterOption[]>(() => {
     if (referenceCategories.length > 0) {

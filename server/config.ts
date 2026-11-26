@@ -79,6 +79,7 @@ export interface ServerConfig {
   supabasePublishableKey: string | null;
   openrouterApiKey: string | null;
   openrouterModel: string | null;
+  openrouterModelFallback?: string | null;
   demoLoginEmail: string | null;
   demoLoginPassword: string | null;
   validationErrors: string[];
@@ -90,6 +91,7 @@ export interface ServerConfig {
     openrouterKeyConfigured: boolean;
     openrouterModelConfigured: boolean;
     openrouterFreeTierValid: boolean;
+    openrouterFallbackValid?: boolean;
     paidFallbackAllowed: false;
     autoRoutingAllowed: false;
   };
@@ -162,18 +164,35 @@ function isValidSupabaseUrl(raw: string): boolean {
   }
 }
 
+export const DEFAULT_OPENROUTER_MODEL_PRIMARY =
+  'nvidia/nemotron-3-ultra-550b-a55b:free';
+export const DEFAULT_OPENROUTER_MODEL_FALLBACK =
+  'inclusionai/ling-3.2-flash:free';
+
 /**
- * Enforces the strict Stage 1A cost constraint on OPENROUTER_MODEL:
- * - Never hardcoded
+ * Enforces the strict free-models-only cost constraint on OpenRouter models:
  * - Never `openrouter/auto` (automatic routing can select paid models)
- * - Verified free-tier model slug only (`:free` suffix on OpenRouter)
+ * - Explicit `<provider>/<model>:free` slug only
  */
-function isVerifiedFreeOpenRouterModel(model: string): boolean {
+export function isVerifiedFreeOpenRouterModel(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   if (!normalized || normalized === 'openrouter/auto') {
     return false;
   }
   return normalized.endsWith(':free') && normalized.includes('/');
+}
+
+export function assertValidFreeOpenRouterModel(
+  model: string,
+  label = 'OPENROUTER_MODEL'
+): string {
+  const trimmed = model.trim();
+  if (!isVerifiedFreeOpenRouterModel(trimmed)) {
+    throw new Error(
+      `${label} "${trimmed}" violates the free-models-only policy (must be an explicit <provider>/<model>:free slug and must not be openrouter/auto).`
+    );
+  }
+  return trimmed;
 }
 
 const portSchema = z.coerce.number().int().min(1).max(65535).default(3000);
@@ -244,19 +263,30 @@ export function loadServerConfig(
     );
   }
 
-  let openrouterModel = normalizeEnvValue(env.OPENROUTER_MODEL);
+  const rawPrimaryModel = normalizeEnvValue(env.OPENROUTER_MODEL);
+  let openrouterModel: string | null =
+    rawPrimaryModel ?? DEFAULT_OPENROUTER_MODEL_PRIMARY;
   let openrouterFreeTierValid = false;
-  if (!openrouterModel) {
-    validationWarnings.push(
-      'OPENROUTER_MODEL is not configured; no model ID is hardcoded. Set a verified :free model before Stage 4.'
-    );
-  } else if (!isVerifiedFreeOpenRouterModel(openrouterModel)) {
+  if (!isVerifiedFreeOpenRouterModel(openrouterModel)) {
     validationErrors.push(
-      'OPENROUTER_MODEL violates free-models-only policy (must be an explicit `<provider>/<model>:free` slug and must not be `openrouter/auto`).'
+      'OPENROUTER_MODEL violates free-models-only policy (must end in `:free` and must not be `openrouter/auto`).'
     );
     openrouterModel = null;
   } else {
     openrouterFreeTierValid = true;
+  }
+
+  const rawFallbackModel = normalizeEnvValue(env.OPENROUTER_MODEL_FALLBACK);
+  let openrouterModelFallback: string | null =
+    rawFallbackModel ?? DEFAULT_OPENROUTER_MODEL_FALLBACK;
+  let openrouterFallbackValid = false;
+  if (!isVerifiedFreeOpenRouterModel(openrouterModelFallback)) {
+    validationErrors.push(
+      'OPENROUTER_MODEL_FALLBACK violates free-models-only policy (must end in `:free` and must not be `openrouter/auto`).'
+    );
+    openrouterModelFallback = null;
+  } else {
+    openrouterFallbackValid = true;
   }
 
   return {
@@ -269,6 +299,7 @@ export function loadServerConfig(
     supabasePublishableKey,
     openrouterApiKey,
     openrouterModel,
+    openrouterModelFallback,
     demoLoginEmail,
     demoLoginPassword,
     validationErrors,
@@ -280,6 +311,7 @@ export function loadServerConfig(
       openrouterKeyConfigured: Boolean(openrouterApiKey),
       openrouterModelConfigured: Boolean(openrouterModel),
       openrouterFreeTierValid,
+      openrouterFallbackValid,
       paidFallbackAllowed: false,
       autoRoutingAllowed: false,
     },

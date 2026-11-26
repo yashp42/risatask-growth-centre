@@ -55,6 +55,7 @@ export function GrowthAnalystWorkspace({
           session.setFilters((prev) => ({ ...prev, as_of }))
         }
         dataVersion={session.dataVersion}
+        quota={session.quota}
         conversationId={session.conversationId}
         onResetConversation={session.resetConversation}
         pendingActionCount={pendingCount}
@@ -121,6 +122,7 @@ export function GrowthAnalystWorkspace({
               onRequestConfirmAction={setPendingConfirmAction}
               onCancelAction={(id) => void session.cancelAction(id)}
               onOpenRecord={onOpenRecord}
+              onSubmitFeedback={session.submitFeedback}
             />
           </section>
 

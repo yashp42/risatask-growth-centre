@@ -11,6 +11,7 @@ import type {
 import {
   ALL_PAYMENT_SCHEDULE_KINDS,
   ALL_RECEIPT_METHODS,
+  type AllocateReceiptPayload,
   type BalanceViewRecord,
   type CollectionsContractRow,
   type CollectionsFilters,
@@ -312,15 +313,32 @@ export function formatReceiptMethod(
   method?: ReceiptMethod | string | null
 ): string {
   if (!method) return '—';
-  switch (method) {
-    case 'bank transfer':
+  const normalized = String(method).trim().toLowerCase().replace(/\s+/g, '_');
+  switch (normalized) {
+    case 'bank_transfer':
       return 'Bank transfer';
-    case 'UPI':
+    case 'upi':
       return 'UPI';
     case 'cheque':
       return 'Cheque';
     default:
       return String(method);
+  }
+}
+
+export function formatPaymentTermsLabel(terms?: string | null): string {
+  if (!terms) return '—';
+  switch (terms.trim().toLowerCase()) {
+    case 'standard_50_50':
+    case 'standard 50/50':
+      return 'Standard 50/50';
+    case '100_upfront':
+    case '100% upfront':
+      return '100% upfront';
+    case 'custom':
+      return 'Custom';
+    default:
+      return terms;
   }
 }
 
@@ -490,7 +508,9 @@ function normalizeReceipt(
   raw: Record<string, unknown>,
   fallbackContract?: Partial<CollectionsContractRow>
 ): ReceiptRecord {
-  const rawMethod = raw.method ? String(raw.method) : null;
+  const rawMethod = raw.method
+    ? String(raw.method).trim().toLowerCase().replace(/\s+/g, '_')
+    : null;
   const method =
     rawMethod && ALL_RECEIPT_METHODS.includes(rawMethod as ReceiptMethod)
       ? (rawMethod as ReceiptMethod)
@@ -1246,6 +1266,110 @@ export async function createReceipt(
     body: JSON.stringify(payload),
   });
   return normalizeReceipt(res.receipt ?? res);
+}
+
+export async function cancelInvoice(
+  editionId: string,
+  invoiceId: string,
+  reason: string,
+  permissionProfile: CollectionsPermissionProfile
+): Promise<{ invoice_id: string; status: string }> {
+  if (!permissionProfile.canWriteInvoices) {
+    throw new CollectionsApiError(
+      'Only Finance & Collections can cancel invoices.',
+      403,
+      'FORBIDDEN'
+    );
+  }
+  if (!reason.trim()) {
+    throw new CollectionsApiError(
+      'A cancellation reason is required.',
+      400,
+      'INVALID_REASON'
+    );
+  }
+  return requestJson<{ invoice_id: string; status: string }>(
+    `${OVERVIEW_API_ENDPOINTS.collectionsInvoices}/${encodeURIComponent(invoiceId)}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        edition_id: editionId,
+        reason: reason.trim(),
+      }),
+    }
+  );
+}
+
+/**
+ * Finance-only write: POST /api/collections/allocations -> DB allocate_receipt()
+ */
+export async function allocateReceipt(
+  payload: AllocateReceiptPayload,
+  permissionProfile: CollectionsPermissionProfile
+): Promise<ReceiptAllocationRecord> {
+  if (!permissionProfile.canWriteReceipts) {
+    throw new CollectionsApiError(
+      'Only Finance & Collections can allocate receipts.',
+      403,
+      'FORBIDDEN'
+    );
+  }
+  if ((payload.record_class as string) === 'historical_synthetic') {
+    throw new CollectionsApiError(
+      'Allocations cannot be recorded under historical synthetic records.',
+      403,
+      'READ_ONLY_RECORD'
+    );
+  }
+  if (!payload.invoice_id && !payload.schedule_item_id) {
+    throw new CollectionsApiError(
+      'Select an invoice or payment schedule item to allocate against.',
+      400,
+      'INVALID_ALLOCATION_TARGET'
+    );
+  }
+  if (!Number.isFinite(payload.amount) || payload.amount <= 0) {
+    throw new CollectionsApiError(
+      'Allocation amount must be greater than zero.',
+      400,
+      'INVALID_AMOUNT'
+    );
+  }
+  const res = await requestJson<
+    Record<string, unknown> & { allocation?: Record<string, unknown> }
+  >(OVERVIEW_API_ENDPOINTS.collectionsAllocations, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return normalizeAllocation(res.allocation ?? res);
+}
+
+/**
+ * Finance-only write: POST /api/collections/receipts/:id/reconcile -> DB reconcile_receipt()
+ */
+export async function reconcileReceipt(
+  editionId: string,
+  receiptId: string,
+  permissionProfile: CollectionsPermissionProfile
+): Promise<{ receipt_id: string; reconciled: boolean; reconciled_at?: string | null }> {
+  if (!permissionProfile.canWriteReceipts) {
+    throw new CollectionsApiError(
+      'Only Finance & Collections can reconcile receipts.',
+      403,
+      'FORBIDDEN'
+    );
+  }
+  return requestJson<{
+    receipt_id: string;
+    reconciled: boolean;
+    reconciled_at?: string | null;
+  }>(
+    `${OVERVIEW_API_ENDPOINTS.collectionsReceipts}/${encodeURIComponent(receiptId)}/reconcile`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ edition_id: editionId }),
+    }
+  );
 }
 
 /**

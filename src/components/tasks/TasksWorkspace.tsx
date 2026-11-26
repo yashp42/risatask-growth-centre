@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSeason } from '../../contexts/SeasonContext';
 import { isHistoricalReadOnlyEdition } from '../../lib/dateIst';
@@ -58,6 +59,7 @@ export function TasksWorkspace({
   onOpenCampaign,
 }: TasksWorkspaceProps) {
   const { editionId, recordClass, setEditionAndClass } = useSeason();
+  const queryClient = useQueryClient();
 
   const [filters, setFilters] = useState<TaskFilters>(() => ({
     search: '',
@@ -222,7 +224,8 @@ export function TasksWorkspace({
   const invalidateAll = useCallback(() => {
     setPreviewMode('default');
     setReloadNonce((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
 
   const handleMarkDone = useCallback(
     async (task: TaskRecord) => {

@@ -15,8 +15,10 @@ import {
 import {
   COLLECTIONS_EDITION_BY_CLASS,
   COLLECTIONS_RECORD_CLASS_OPTIONS,
+  CollectionsApiError,
   formatCollectionsCurrency,
   formatInvoiceStatus,
+  formatPaymentTermsLabel,
   formatReceiptMethod,
   formatScheduleKind,
   formatScheduleStatus,
@@ -60,11 +62,17 @@ interface CollectionsWorkspacePageProps {
   permissionProfile: CollectionsPermissionProfile;
   status: DataLoadStatus;
   error: ApiErrorInfo | null;
+  actionError: string | null;
+  onDismissActionError: () => void;
+  reconcilingReceiptId: string | null;
   onRetry: () => void;
   onRefresh: () => void;
   onOpenScheduleDrawer: (contractId?: string | null) => void;
   onOpenInvoiceDrawer: (contractId?: string | null) => void;
   onOpenReceiptDrawer: (sponsorId?: string | null) => void;
+  onOpenAllocateDrawer: (receipt: ReceiptRecord) => void;
+  onReconcileReceipt: (receiptId: string) => void;
+  onCancelInvoice: (invoiceId: string, reason: string) => Promise<void>;
   onOpenPaymentTermsDrawer: (contract: CollectionsContractRow) => void;
   onOpenSponsor?: (sponsorId: string) => void;
   onOpenOpportunity?: (opportunityId: string) => void;
@@ -94,11 +102,17 @@ export function CollectionsWorkspacePage({
   permissionProfile,
   status,
   error,
+  actionError,
+  onDismissActionError,
+  reconcilingReceiptId,
   onRetry,
   onRefresh,
   onOpenScheduleDrawer,
   onOpenInvoiceDrawer,
   onOpenReceiptDrawer,
+  onOpenAllocateDrawer,
+  onReconcileReceipt,
+  onCancelInvoice,
   onOpenPaymentTermsDrawer,
   onOpenSponsor,
   onOpenOpportunity,
@@ -107,6 +121,12 @@ export function CollectionsWorkspacePage({
   onChangePreviewMode,
 }: CollectionsWorkspacePageProps) {
   const [activeTab, setActiveTab] = useState<CollectionsTab>('receivables');
+  const [cancellingInvoiceId, setCancellingInvoiceId] = useState<string | null>(
+    null
+  );
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const isHistorical = isHistoricalReadOnlyEdition(
     filters.edition_id,
@@ -439,6 +459,25 @@ export function CollectionsWorkspacePage({
         </nav>
       </div>
 
+      {actionError ? (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-md border border-[#9B3B32]/30 bg-[#9B3B32]/5 px-4 py-3 text-[13px] text-[#9B3B32]"
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onDismissActionError}
+            className="text-[12px] font-medium underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       {/* Main Content */}
       <DataStateWrapper
         status={status}
@@ -583,7 +622,9 @@ export function CollectionsWorkspacePage({
 
                             <td className="px-4 py-3 text-[#525E58]">
                               <div className="flex items-center gap-2">
-                                <span>{contract.payment_terms || '—'}</span>
+                                <span>
+                                  {formatPaymentTermsLabel(contract.payment_terms)}
+                                </span>
                                 {permissionProfile.canEditPaymentTerms &&
                                 contract.status !== 'terminated' ? (
                                   <button
@@ -867,8 +908,80 @@ export function CollectionsWorkspacePage({
             <div className="space-y-3">
               <p className="text-[12px] text-[#525E58]">
                 Invoices are immutable once issued and do not represent cash
-                collected until matched to reconciled receipts.
+                collected until matched to reconciled receipts. Issued invoices
+                with no allocated receipts may be cancelled by Finance.
               </p>
+
+              {cancellingInvoiceId ? (
+                <div className="rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-4">
+                  <div className="text-[13px] font-medium text-[#202824]">
+                    Cancel invoice {cancellingInvoiceId}
+                  </div>
+                  <p className="mt-1 text-[12px] text-[#525E58]">
+                    Invoices with allocated receipts cannot be cancelled.
+                  </p>
+                  {cancelError ? (
+                    <div
+                      role="alert"
+                      className="mt-2 flex items-start gap-2 rounded-md border border-[#9B3B32]/30 bg-[#9B3B32]/5 px-3 py-2 text-[12px] text-[#9B3B32]"
+                    >
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{cancelError}</span>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      type="text"
+                      value={cancelReason}
+                      onChange={(e) => setCancelReason(e.target.value)}
+                      placeholder="Reason for cancellation (required)"
+                      className="h-9 flex-1 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCancellingInvoiceId(null);
+                          setCancelReason('');
+                          setCancelError(null);
+                        }}
+                        className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6]"
+                      >
+                        Close
+                      </button>
+                      <button
+                        type="button"
+                        disabled={cancelSubmitting || !cancelReason.trim()}
+                        onClick={async () => {
+                          if (!cancellingInvoiceId) return;
+                          setCancelSubmitting(true);
+                          setCancelError(null);
+                          try {
+                            await onCancelInvoice(
+                              cancellingInvoiceId,
+                              cancelReason
+                            );
+                            setCancellingInvoiceId(null);
+                            setCancelReason('');
+                          } catch (err: unknown) {
+                            setCancelError(
+                              err instanceof CollectionsApiError
+                                ? err.message
+                                : 'Unable to cancel invoice.'
+                            );
+                          } finally {
+                            setCancelSubmitting(false);
+                          }
+                        }}
+                        className="h-9 rounded-md bg-[#9B3B32] px-3 text-[12px] font-medium text-white hover:bg-[#822F27] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {cancelSubmitting ? 'Cancelling...' : 'Confirm cancel'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="overflow-hidden rounded-md border border-[#D9D7D0] bg-white">
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse text-left">
@@ -881,7 +994,7 @@ export function CollectionsWorkspacePage({
                         <th className="px-4 py-3 text-right">Amount</th>
                         <th className="px-4 py-3 text-right">Tax</th>
                         <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3 text-right">Document</th>
+                        <th className="px-4 py-3 text-right">Document &amp; Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#E8E6E0] text-[13px]">
@@ -932,21 +1045,43 @@ export function CollectionsWorkspacePage({
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            {inv.document_uri ? (
-                              <a
-                                href={inv.document_uri}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-[12px] font-medium text-[#315F52] hover:underline"
-                              >
-                                <span>View</span>
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            ) : (
-                              <span className="text-[12px] text-[#788C83]">
-                                —
-                              </span>
-                            )}
+                            <div className="inline-flex items-center gap-3">
+                              {inv.document_uri ? (
+                                <a
+                                  href={inv.document_uri}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-[12px] font-medium text-[#315F52] hover:underline"
+                                >
+                                  <span>View</span>
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                              ) : (
+                                <span className="text-[12px] text-[#788C83]">
+                                  —
+                                </span>
+                              )}
+                              {permissionProfile.canWriteInvoices &&
+                              inv.status === 'issued' ? (
+                                <button
+                                  type="button"
+                                  disabled={isHistorical}
+                                  title={
+                                    isHistorical
+                                      ? READ_ONLY_2025_MESSAGE
+                                      : undefined
+                                  }
+                                  onClick={() => {
+                                    setCancellingInvoiceId(inv.invoice_id);
+                                    setCancelReason('');
+                                    setCancelError(null);
+                                  }}
+                                  className="text-[12px] font-medium text-[#9B3B32] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Cancel
+                                </button>
+                              ) : null}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1040,6 +1175,9 @@ export function CollectionsWorkspacePage({
                         <th className="px-4 py-3 text-right">Amount</th>
                         <th className="px-4 py-3">Reconciliation</th>
                         <th className="px-4 py-3">Allocation &amp; Collection</th>
+                        {permissionProfile.canWriteReceipts ? (
+                          <th className="px-4 py-3 text-right">Actions</th>
+                        ) : null}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#E8E6E0] text-[13px]">
@@ -1048,11 +1186,16 @@ export function CollectionsWorkspacePage({
                           rec.allocations ??
                           allocationsByReceipt.get(rec.receipt_id) ??
                           [];
-                        const isAllocated =
-                          (rec.allocated_amount !== null &&
-                            rec.allocated_amount !== undefined &&
-                            rec.allocated_amount > 0) ||
-                          recAllocs.length > 0;
+                        const allocatedAmt =
+                          rec.allocated_amount ??
+                          recAllocs.reduce(
+                            (sum, a) => sum + Number(a.amount || 0),
+                            0
+                          );
+                        const unallocatedAmt =
+                          rec.unallocated_amount ??
+                          Math.max(0, Number(rec.amount || 0) - allocatedAmt);
+                        const isAllocated = allocatedAmt > 0 || recAllocs.length > 0;
                         const isCountedAsCollected =
                           typeof rec.counted_as_collected === 'boolean'
                             ? rec.counted_as_collected
@@ -1115,7 +1258,9 @@ export function CollectionsWorkspacePage({
                                     : 'text-[#9B6B2E]'
                                 }`}
                               >
-                                {rec.reconciled ? 'Reconciled' : 'Unreconciled'}
+                                {rec.reconciled
+                                  ? 'Reconciled'
+                                  : 'Received, not yet reconciled (not counted)'}
                               </span>
                             </td>
 
@@ -1132,7 +1277,7 @@ export function CollectionsWorkspacePage({
                                     ? 'Counted as collected'
                                     : rec.reconciled
                                       ? 'Reconciled, not yet allocated'
-                                      : 'Unreconciled — not counted'}
+                                      : 'Not yet counted toward M-01'}
                                 </div>
 
                                 {permissionProfile.canReadReceiptsScope !==
@@ -1163,6 +1308,50 @@ export function CollectionsWorkspacePage({
                                 ) : null}
                               </div>
                             </td>
+
+                            {permissionProfile.canWriteReceipts ? (
+                              <td className="px-4 py-3 text-right">
+                                <div className="inline-flex items-center gap-3">
+                                  {unallocatedAmt > 0 ? (
+                                    <button
+                                      type="button"
+                                      disabled={isHistorical}
+                                      title={
+                                        isHistorical
+                                          ? READ_ONLY_2025_MESSAGE
+                                          : undefined
+                                      }
+                                      onClick={() => onOpenAllocateDrawer(rec)}
+                                      className="text-[12px] font-medium text-[#315F52] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      Allocate
+                                    </button>
+                                  ) : null}
+                                  {!rec.reconciled ? (
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        isHistorical ||
+                                        reconcilingReceiptId === rec.receipt_id
+                                      }
+                                      title={
+                                        isHistorical
+                                          ? READ_ONLY_2025_MESSAGE
+                                          : undefined
+                                      }
+                                      onClick={() =>
+                                        onReconcileReceipt(rec.receipt_id)
+                                      }
+                                      className="text-[12px] font-medium text-[#315F52] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {reconcilingReceiptId === rec.receipt_id
+                                        ? 'Reconciling...'
+                                        : 'Reconcile'}
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                            ) : null}
                           </tr>
                         );
                       })}

@@ -12,7 +12,9 @@ import {
   CLOSED_OPPORTUNITY_STAGES,
   OPEN_OPPORTUNITY_STAGES,
   PIPELINE_SUMMARY_METRIC_IDS,
+  type ConfirmOpportunityPayload,
   type CreateOpportunityTaskPayload,
+  type InventoryAssetOption,
   type MeetingRecord,
   type OpportunityCreatePayload,
   type OpportunityEntity,
@@ -30,6 +32,7 @@ import {
   type ProposalStatus,
 } from '../types/pipeline';
 import type {
+  CanonicalRole,
   SponsorContractRecord,
   UserPermissionContext,
 } from '../types/sponsors';
@@ -164,23 +167,25 @@ export const OPPORTUNITY_EDITION_BY_CLASS: Record<
  * Open enum in 01_conceptual_data_model.md §4B (K-B1-05, K-B2-03).
  */
 export const DROP_REASON_SUGGESTIONS: ReadonlyArray<string> = [
-  'budget_frozen',
-  'no_response',
-  'timing_mismatch',
+  'budget_mismatch',
+  'timing_fit',
+  'category_conflict',
   'terms_dispute',
-  'category_exclusivity_conflict',
-  'sla_lapsed',
-  'sponsor_withdrew',
+  'no_response',
+  'sla_breach_dropped',
+  'sponsor_declined',
+  'internal_withdrawn',
   'other',
 ];
 
 export const LOSS_REASON_SUGGESTIONS: ReadonlyArray<string> = [
   'terms_dispute',
-  'pricing_mismatch',
-  'competitor_selected',
-  'low_brand_fit',
-  'deliverables_mismatch',
-  'budget_cut',
+  'budget_mismatch',
+  'competitor_exclusivity',
+  'timing_fit',
+  'no_response',
+  'category_conflict',
+  'other',
 ];
 
 export function getDefaultPipelineEditionForClass(
@@ -279,13 +284,34 @@ export function canUserEditOpportunity(
   return ownerId === permissions.member_id;
 }
 
+const SALES_CONFIRM_ROLES: ReadonlySet<CanonicalRole> = new Set([
+  'partnerships',
+  'community',
+  'network',
+  'premium_sales',
+]);
+
 export function canUserConfirmPartnership(
   permissions: UserPermissionContext
 ): boolean {
   if (!permissions.verified_by_server) return true;
-  // Per §4: coordination_lead holds CRUA (A = approve or confirm) on Opportunities and stage.
-  // Pipeline ops / sales hold CRU; backend governs final confirmation rules.
-  return permissions.write_scope === 'all' || permissions.write_scope === 'own';
+  if (permissions.roles.includes('coordination_lead')) return true;
+  return permissions.roles.some((r) => SALES_CONFIRM_ROLES.has(r));
+}
+
+export function canUserConfirmDeal(
+  opportunity: OpportunityEntity,
+  permissions: UserPermissionContext
+): boolean {
+  if (isOpportunityReadOnly(opportunity)) return false;
+  if (!permissions.verified_by_server) return true;
+  if (permissions.roles.includes('coordination_lead')) return true;
+  const hasSalesRole = permissions.roles.some((r) =>
+    SALES_CONFIRM_ROLES.has(r)
+  );
+  if (!hasSalesRole) return false;
+  const ownerId = opportunity.current_stage_version?.owner_member_id;
+  return Boolean(permissions.member_id && ownerId && ownerId === permissions.member_id);
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -879,6 +905,64 @@ export async function fetchOpportunityContracts(
   >(`${OVERVIEW_API_ENDPOINTS.contracts}?${params.toString()}`, { signal });
 
   return Array.isArray(res) ? res : res.contracts ?? res.items ?? [];
+}
+
+export async function confirmOpportunity(
+  opportunityId: string,
+  payload: ConfirmOpportunityPayload,
+  currentRecord?: OpportunityEntity
+): Promise<{
+  contractId: string;
+  dataVersion?: string | number;
+  contract?: Record<string, unknown>;
+}> {
+  if (currentRecord && isOpportunityReadOnly(currentRecord)) {
+    throw new PipelineApiError(
+      'Historical synthetic records are read-only and cannot be confirmed.',
+      403,
+      'READ_ONLY_RECORD'
+    );
+  }
+
+  const res = await requestJson<
+    Record<string, unknown> & {
+      id?: string;
+      contract?: Record<string, unknown>;
+      dataVersion?: string | number;
+      data_version?: string | number;
+    }
+  >(
+    `${OVERVIEW_API_ENDPOINTS.opportunities}/${encodeURIComponent(opportunityId)}/confirm`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+
+  return {
+    contractId: String(
+      res.id ?? (res.contract?.contract_id as string | undefined) ?? ''
+    ),
+    dataVersion: res.dataVersion ?? res.data_version,
+    contract: res.contract,
+  };
+}
+
+export async function fetchInventoryAssets(
+  editionId: string,
+  signal?: AbortSignal
+): Promise<InventoryAssetOption[]> {
+  try {
+    const params = new URLSearchParams({ edition_id: editionId });
+    const res = await requestJson<{ assets?: InventoryAssetOption[] }>(
+      `${OVERVIEW_API_ENDPOINTS.referenceAssets}?${params.toString()}`,
+      { signal }
+    );
+    return res.assets ?? [];
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    return [];
+  }
 }
 
 export async function fetchPipelineContextCampaigns(

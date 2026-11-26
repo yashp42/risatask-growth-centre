@@ -29,11 +29,11 @@ export const ALL_PAYMENT_SCHEDULE_KINDS: ReadonlyArray<PaymentScheduleKind> = [
 ];
 
 export const PAYMENT_TERMS_OPTIONS: ReadonlyArray<{
-  value: string;
+  value: 'standard_50_50' | '100_upfront' | 'custom';
   label: string;
 }> = [
-  { value: 'standard 50/50', label: 'Standard 50/50' },
-  { value: '100% upfront', label: '100% upfront' },
+  { value: 'standard_50_50', label: 'Standard 50/50' },
+  { value: '100_upfront', label: '100% upfront' },
   { value: 'custom', label: 'Custom' },
 ];
 
@@ -89,11 +89,11 @@ export interface InvoiceRecord {
  * Canonical RECEIPT entity (01_conceptual_data_model.md §4D)
  * Immutable; record_class ∈ {live, simulated} only.
  */
-export type ReceiptMethod = 'bank transfer' | 'UPI' | 'cheque';
+export type ReceiptMethod = 'bank_transfer' | 'upi' | 'cheque';
 
 export const ALL_RECEIPT_METHODS: ReadonlyArray<ReceiptMethod> = [
-  'bank transfer',
-  'UPI',
+  'bank_transfer',
+  'upi',
   'cheque',
 ];
 
@@ -241,6 +241,7 @@ export interface CreatePaymentSchedulePayload {
   amount_due: number;
   due_date: string;
   record_class: 'simulated' | 'live';
+  edition_id?: string;
 }
 
 export interface CreateInvoicePayload {
@@ -252,6 +253,7 @@ export interface CreateInvoicePayload {
   tax_amount?: number | null;
   document_uri?: string | null;
   record_class: 'simulated' | 'live';
+  edition_id?: string;
 }
 
 export interface CreateReceiptPayload {
@@ -260,10 +262,20 @@ export interface CreateReceiptPayload {
   amount: number;
   method: ReceiptMethod;
   bank_reference: string;
-  reconciled: boolean;
+  reconciled: false;
   record_class: 'simulated' | 'live';
+  edition_id?: string;
+}
+
+export interface AllocateReceiptPayload {
+  receipt_id: string;
+  invoice_id?: string | null;
+  schedule_item_id?: string | null;
+  amount: number;
+  record_class: 'simulated' | 'live';
+  edition_id?: string;
 }
 
 export interface UpdateContractPaymentTermsPayload {
-  payment_terms: string;
+  payment_terms: 'standard_50_50' | '100_upfront' | 'custom' | string;
 }

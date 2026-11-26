@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { useSeason } from '../../contexts/SeasonContext';
 import { isHistoricalReadOnlyEdition } from '../../lib/dateIst';
@@ -37,6 +38,7 @@ export function CampaignsWorkspace({
 }: CampaignsWorkspaceProps) {
   const { editionId, recordClass, asOf, setEditionAndClass, setAsOf } =
     useSeason();
+  const queryClient = useQueryClient();
 
   const [filters, setFilters] = useState<CampaignPortfolioFilters>(() => ({
     search: '',
@@ -174,7 +176,8 @@ export function CampaignsWorkspace({
   const invalidateAll = useCallback(() => {
     setPreviewMode('default');
     setReloadNonce((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
 
   const writableRecordClass: 'simulated' | 'live' =
     filters.record_class === 'live' ? 'live' : 'simulated';

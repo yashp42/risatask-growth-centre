@@ -612,14 +612,23 @@ export async function fetchTaskAuditHistory(
     .sort((a, b) => (b.at || '').localeCompare(a.at || ''));
 }
 
+export interface TeamRoleAssignmentInfo {
+  role_assignment_id: string;
+  role: string;
+  edition_id: string;
+  valid_from?: string | null;
+}
+
 export interface TeamDirectoryMember {
   member_id: string;
   full_name: string;
   email?: string | null;
+  auth_linked?: boolean;
   fte_share?: number | null;
   is_active?: boolean;
   record_class?: string;
   roles?: string[];
+  role_assignments?: TeamRoleAssignmentInfo[];
 }
 
 export async function fetchTeamRoster(

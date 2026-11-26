@@ -22,6 +22,8 @@ import {
   SponsorApiError,
   canUserEditSponsor,
   canUserManageSponsorContacts,
+  createInteraction,
+  createOutreachAttempt,
   deriveSponsorCampaigns,
   fetchCampaignsForSponsorContext,
   fetchSponsorById,
@@ -30,6 +32,7 @@ import {
   fetchSponsorInteractions,
   fetchSponsorOpportunities,
   fetchSponsorOutreach,
+  fetchSponsorTeamRoster,
   formatDecisionRole,
   formatFirstSource,
   formatLifecycleStatus,
@@ -40,6 +43,8 @@ import {
   isContactReadOnly,
   isSponsorReadOnly,
   markContactOptedOut,
+  reassignSponsorOwnership,
+  recordSponsorQualification,
 } from '../../services/sponsorsApi';
 import type {
   CampaignEntity,
@@ -150,6 +155,46 @@ export function SponsorDetailView({
   const [localReload, setLocalReload] = useState(0);
   const [contactDrawerOpen, setContactDrawerOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<ContactEntity | null>(
+    null
+  );
+  const [teamRoster, setTeamRoster] = useState<
+    Array<{ member_id: string; full_name: string }>
+  >([]);
+
+  // Ownership reassignment state
+  const [showOwnerForm, setShowOwnerForm] = useState(false);
+  const [newOwnerId, setNewOwnerId] = useState('');
+  const [ownerReason, setOwnerReason] = useState('');
+  const [ownerSubmitting, setOwnerSubmitting] = useState(false);
+  const [ownerError, setOwnerError] = useState<string | null>(null);
+
+  // Qualification state
+  const [showQualifyForm, setShowQualifyForm] = useState(false);
+  const [qualStatus, setQualStatus] = useState<
+    'unreviewed' | 'engaged' | 'qualified' | 'unqualified' | 'dormant'
+  >('qualified');
+  const [qualCampaignId, setQualCampaignId] = useState('');
+  const [qualReason, setQualReason] = useState('');
+  const [qualSubmitting, setQualSubmitting] = useState(false);
+  const [qualFeedback, setQualFeedback] = useState<string | null>(null);
+
+  // Outreach & interaction state
+  const [showOutreachForm, setShowOutreachForm] = useState(false);
+  const [outreachCampaignId, setOutreachCampaignId] = useState('');
+  const [outreachContactId, setOutreachContactId] = useState('');
+  const [outreachRootEvent, setOutreachRootEvent] = useState<
+    'outreach_sent' | 'introduction_received' | 'web_inbound'
+  >('outreach_sent');
+  const [outreachSummary, setOutreachSummary] = useState('');
+  const [showInteractionForm, setShowInteractionForm] = useState(false);
+  const [interactionAttemptId, setInteractionAttemptId] = useState('');
+  const [interactionEventType, setInteractionEventType] = useState<
+    'replied' | 'meeting_booked' | 'meeting_held' | 'follow_up_sent' | 'note' | 'opt_out'
+  >('replied');
+  const [interactionOutcome, setInteractionOutcome] = useState('positive');
+  const [interactionSummary, setInteractionSummary] = useState('');
+  const [activityFormSubmitting, setActivityFormSubmitting] = useState(false);
+  const [activityFormError, setActivityFormError] = useState<string | null>(
     null
   );
 
@@ -283,6 +328,15 @@ export function SponsorDetailView({
       )
         .then((list) => setCampaignsCatalog(list))
         .catch(() => setCampaignsCatalog([]));
+
+      // Team roster for ownership reassignment
+      fetchSponsorTeamRoster(
+        sEdition ?? editionId,
+        sClass,
+        controller.signal
+      )
+        .then((roster) => setTeamRoster(roster))
+        .catch(() => setTeamRoster([]));
     };
 
     fetchSponsorById(
@@ -738,14 +792,33 @@ export function SponsorDetailView({
                     </p>
                   </div>
                   <div>
-                    <div className="flex items-center gap-1">
-                      <p className="text-[11px] font-medium text-[#788C83]">
-                        Relationship owner
-                      </p>
-                      <InfoHint
-                        label="Ownership assignment"
-                        content="Derived from the current active OWNERSHIP_ASSIGNMENT record; prior handoff records are preserved in ownership history."
-                      />
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1">
+                        <p className="text-[11px] font-medium text-[#788C83]">
+                          Relationship owner
+                        </p>
+                        <InfoHint
+                          label="Ownership assignment"
+                          content="Derived from the current active OWNERSHIP_ASSIGNMENT record; prior handoff records are preserved in ownership history."
+                        />
+                      </div>
+                      {!readOnly &&
+                      permissions.verified_by_server &&
+                      permissions.write_scope === 'all' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOwnerError(null);
+                            setNewOwnerId(
+                              sponsor.current_ownership?.member_id ?? ''
+                            );
+                            setShowOwnerForm((v) => !v);
+                          }}
+                          className="text-[11px] font-medium text-[#315F52] hover:underline"
+                        >
+                          {showOwnerForm ? 'Cancel' : 'Change owner'}
+                        </button>
+                      ) : null}
                     </div>
                     <p className="mt-1 text-[13px] text-[#202824]">
                       {sponsor.current_ownership
@@ -757,6 +830,66 @@ export function SponsorDetailView({
                       <p className="mt-0.5 font-mono text-[11px] text-[#788C83]">
                         Since {sponsor.current_ownership.valid_from.slice(0, 10)}
                       </p>
+                    ) : null}
+
+                    {showOwnerForm && !readOnly ? (
+                      <div className="mt-2 space-y-2 rounded border border-[#E8E6E0] bg-[#FAF9F6] p-2.5">
+                        {ownerError ? (
+                          <p className="text-[11px] text-[#9B3B32]">{ownerError}</p>
+                        ) : null}
+                        <select
+                          aria-label="New owner member"
+                          value={newOwnerId}
+                          onChange={(e) => setNewOwnerId(e.target.value)}
+                          className="h-8 w-full rounded border border-[#D9D7D0] bg-white px-2 text-[12px] text-[#202824]"
+                        >
+                          <option value="">Select owner...</option>
+                          {teamRoster.map((tm) => (
+                            <option key={tm.member_id} value={tm.member_id}>
+                              {tm.full_name} ({tm.member_id})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={ownerReason}
+                          onChange={(e) => setOwnerReason(e.target.value)}
+                          placeholder="Handoff reason"
+                          className="h-8 w-full rounded border border-[#D9D7D0] bg-white px-2 text-[12px] text-[#202824]"
+                        />
+                        <button
+                          type="button"
+                          disabled={ownerSubmitting || !newOwnerId}
+                          onClick={async () => {
+                            setOwnerSubmitting(true);
+                            setOwnerError(null);
+                            try {
+                              await reassignSponsorOwnership({
+                                subjectType: 'sponsor',
+                                subjectId: sponsor.sponsor_id,
+                                memberId: newOwnerId,
+                                reason: ownerReason.trim() || null,
+                                editionId: sponsor.edition_id ?? editionId,
+                              });
+                              setShowOwnerForm(false);
+                              setOwnerReason('');
+                              triggerReload();
+                              onInvalidateDirectory();
+                            } catch (err) {
+                              setOwnerError(
+                                err instanceof SponsorApiError
+                                  ? err.message
+                                  : 'Unable to reassign owner.'
+                              );
+                            } finally {
+                              setOwnerSubmitting(false);
+                            }
+                          }}
+                          className="h-7 rounded bg-[#315F52] px-2.5 text-[11px] font-medium text-white hover:bg-[#264B40] disabled:opacity-50"
+                        >
+                          {ownerSubmitting ? 'Saving...' : 'Assign owner'}
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                   <div>
@@ -812,6 +945,127 @@ export function SponsorDetailView({
                         </div>
                       ))}
                     </div>
+                  </div>
+                ) : null}
+
+                {editableSponsor && !readOnly ? (
+                  <div className="mt-5 border-t border-[#E8E6E0] pt-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-[#788C83]">
+                        Qualification status
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQualFeedback(null);
+                          setShowQualifyForm((v) => !v);
+                        }}
+                        className="text-[12px] font-medium text-[#315F52] hover:underline"
+                      >
+                        {showQualifyForm ? 'Cancel' : 'Record qualification'}
+                      </button>
+                    </div>
+                    {qualFeedback ? (
+                      <p className="mt-1.5 text-[12px] text-[#315F52]">
+                        {qualFeedback}
+                      </p>
+                    ) : null}
+                    {showQualifyForm ? (
+                      <div className="mt-2 grid grid-cols-1 gap-2 rounded border border-[#E8E6E0] bg-[#FAF9F6] p-3 sm:grid-cols-4 sm:items-end">
+                        <div>
+                          <label className="block text-[11px] font-medium text-[#525E58]">
+                            Status
+                          </label>
+                          <select
+                            value={qualStatus}
+                            onChange={(e) =>
+                              setQualStatus(
+                                e.target.value as
+                                  | 'unreviewed'
+                                  | 'engaged'
+                                  | 'qualified'
+                                  | 'unqualified'
+                                  | 'dormant'
+                              )
+                            }
+                            className="mt-1 h-8 w-full rounded border border-[#D9D7D0] bg-white px-2 text-[12px]"
+                          >
+                            <option value="unreviewed">Unreviewed</option>
+                            <option value="engaged">Engaged</option>
+                            <option value="qualified">Qualified</option>
+                            <option value="unqualified">Unqualified</option>
+                            <option value="dormant">Dormant</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium text-[#525E58]">
+                            Source campaign
+                          </label>
+                          <select
+                            value={qualCampaignId}
+                            onChange={(e) => setQualCampaignId(e.target.value)}
+                            className="mt-1 h-8 w-full rounded border border-[#D9D7D0] bg-white px-2 text-[12px]"
+                          >
+                            <option value="">None / optional</option>
+                            {campaignsCatalog.map((cam) => (
+                              <option key={cam.campaign_id} value={cam.campaign_id}>
+                                {cam.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium text-[#525E58]">
+                            Reason
+                          </label>
+                          <input
+                            type="text"
+                            value={qualReason}
+                            onChange={(e) => setQualReason(e.target.value)}
+                            placeholder="Assessment reason"
+                            className="mt-1 h-8 w-full rounded border border-[#D9D7D0] bg-white px-2 text-[12px]"
+                          />
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            disabled={qualSubmitting}
+                            onClick={async () => {
+                              setQualSubmitting(true);
+                              setQualFeedback(null);
+                              try {
+                                await recordSponsorQualification({
+                                  sponsorId: sponsor.sponsor_id,
+                                  sourceCampaignId: qualCampaignId || null,
+                                  status: qualStatus,
+                                  reason: qualReason.trim() || null,
+                                  checklistPassed: qualStatus === 'qualified',
+                                  editionId: sponsor.edition_id ?? editionId,
+                                });
+                                setShowQualifyForm(false);
+                                setQualReason('');
+                                setQualFeedback(
+                                  `Qualification version "${qualStatus}" saved.`
+                                );
+                                triggerReload();
+                                onInvalidateDirectory();
+                              } catch (err) {
+                                setQualFeedback(
+                                  err instanceof SponsorApiError
+                                    ? err.message
+                                    : 'Unable to record qualification.'
+                                );
+                              } finally {
+                                setQualSubmitting(false);
+                              }
+                            }}
+                            className="h-8 w-full rounded bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#264B40] disabled:opacity-50"
+                          >
+                            {qualSubmitting ? 'Saving...' : 'Save qualification'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -1052,77 +1306,336 @@ export function SponsorDetailView({
 
           {/* 3. Activity */}
           {activeTab === 'activity' ? (
-            <DataStateWrapper
-              status={activityStatus}
-              error={activityError}
-              onRetry={triggerReload}
-              loadingSkeleton={
-                <div className="space-y-3 rounded-md border border-[#D9D7D0] bg-white p-5">
-                  {[0, 1, 2].map((i) => (
-                    <div key={i} className="h-10 rounded bg-[#FAF9F6]" />
-                  ))}
+            <div className="space-y-4">
+              {editableSponsor && !readOnly ? (
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivityFormError(null);
+                      setShowInteractionForm(false);
+                      if (!outreachCampaignId && campaignsCatalog[0]) {
+                        setOutreachCampaignId(campaignsCatalog[0].campaign_id);
+                      }
+                      setShowOutreachForm((v) => !v);
+                    }}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#264B40]"
+                  >
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                    Log outreach
+                  </button>
+                  {outreach.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivityFormError(null);
+                        setShowOutreachForm(false);
+                        if (!interactionAttemptId && outreach[0]) {
+                          setInteractionAttemptId(outreach[0].attempt_id);
+                        }
+                        setShowInteractionForm((v) => !v);
+                      }}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6]"
+                    >
+                      <Plus className="h-3.5 w-3.5 text-[#315F52]" aria-hidden="true" />
+                      Log interaction
+                    </button>
+                  ) : null}
                 </div>
-              }
-            >
-              <div className="overflow-hidden rounded-md border border-[#D9D7D0] bg-white">
-                {timelineItems.length > 0 ? (
-                  <ul className="divide-y divide-[#E8E6E0]">
-                    {timelineItems.map((item) => (
-                      <li key={item.key} className="px-5 py-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-[#788C83]">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-medium capitalize text-[#315F52]">
-                              {item.event_type}
-                            </span>
-                            {item.contact_label ? (
-                              <>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-medium text-[#202824]">
-                                  {item.contact_label}
-                                </span>
-                              </>
-                            ) : null}
-                            {item.campaign_label ? (
-                              <>
-                                <span aria-hidden="true">·</span>
-                                <span>{item.campaign_label}</span>
-                              </>
-                            ) : null}
-                            {item.outcome ? (
-                              <>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-mono text-[11px] text-[#525E58]">
-                                  {item.outcome.replace(/_/g, ' ')}
-                                </span>
-                              </>
-                            ) : null}
-                          </div>
-                          <span className="font-mono text-[11px] tabular-nums">
-                            {item.occurred_at}
-                          </span>
-                        </div>
-                        {item.summary ? (
-                          <p className="mt-1.5 text-[13px] text-[#202824]">
-                            {item.summary}
-                          </p>
-                        ) : null}
-                        {item.actor_label ? (
-                          <p className="mt-1 text-[12px] text-[#788C83]">
-                            {item.actor_label}
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="px-6 py-10 text-center">
-                    <p className="text-[13px] font-medium text-[#202824]">
-                      No interactions recorded yet
-                    </p>
+              ) : null}
+
+              {activityFormError ? (
+                <div className="rounded border border-[#9B3B32]/30 bg-[#9B3B32]/5 px-3.5 py-2 text-[12px] text-[#9B3B32]">
+                  {activityFormError}
+                </div>
+              ) : null}
+
+              {showOutreachForm && editableSponsor && !readOnly ? (
+                <div className="rounded-md border border-[#D9D7D0] bg-white p-4 space-y-3">
+                  <p className="text-[13px] font-semibold text-[#202824]">
+                    Start outreach attempt
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <select
+                      aria-label="Campaign"
+                      value={outreachCampaignId}
+                      onChange={(e) => setOutreachCampaignId(e.target.value)}
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      <option value="">Select campaign...</option>
+                      {campaignsCatalog.map((c) => (
+                        <option key={c.campaign_id} value={c.campaign_id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Contact"
+                      value={outreachContactId}
+                      onChange={(e) => setOutreachContactId(e.target.value)}
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      <option value="">Any / no contact</option>
+                      {contacts.map((c) => (
+                        <option key={c.contact_id} value={c.contact_id}>
+                          {c.full_name}
+                          {isContactOptedOut(c) ? ' (opted out)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Root event"
+                      value={outreachRootEvent}
+                      onChange={(e) =>
+                        setOutreachRootEvent(
+                          e.target.value as
+                            | 'outreach_sent'
+                            | 'introduction_received'
+                            | 'web_inbound'
+                        )
+                      }
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      <option value="outreach_sent">Outreach sent</option>
+                      <option value="introduction_received">
+                        Introduction received
+                      </option>
+                      <option value="web_inbound">Web inbound</option>
+                    </select>
                   </div>
-                )}
-              </div>
-            </DataStateWrapper>
+                  <input
+                    type="text"
+                    value={outreachSummary}
+                    onChange={(e) => setOutreachSummary(e.target.value)}
+                    placeholder="Summary note (optional)"
+                    className="h-9 w-full rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowOutreachForm(false)}
+                      className="h-8 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={activityFormSubmitting || !outreachCampaignId}
+                      onClick={async () => {
+                        setActivityFormSubmitting(true);
+                        setActivityFormError(null);
+                        try {
+                          await createOutreachAttempt({
+                            campaignId: outreachCampaignId,
+                            sponsorId: sponsor.sponsor_id,
+                            contactId: outreachContactId || null,
+                            rootEventType: outreachRootEvent,
+                            startedAt: new Date().toISOString(),
+                            summary: outreachSummary.trim() || null,
+                          });
+                          setShowOutreachForm(false);
+                          setOutreachSummary('');
+                          triggerReload();
+                          onInvalidateDirectory();
+                        } catch (err) {
+                          setActivityFormError(
+                            err instanceof SponsorApiError
+                              ? err.message
+                              : 'Unable to log outreach attempt.'
+                          );
+                        } finally {
+                          setActivityFormSubmitting(false);
+                        }
+                      }}
+                      className="h-8 rounded-md bg-[#315F52] px-3.5 text-[12px] font-medium text-white disabled:opacity-50"
+                    >
+                      {activityFormSubmitting ? 'Saving...' : 'Save outreach'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {showInteractionForm && editableSponsor && !readOnly ? (
+                <div className="rounded-md border border-[#D9D7D0] bg-white p-4 space-y-3">
+                  <p className="text-[13px] font-semibold text-[#202824]">
+                    Append interaction to attempt
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <select
+                      aria-label="Attempt"
+                      value={interactionAttemptId}
+                      onChange={(e) => setInteractionAttemptId(e.target.value)}
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      {outreach.map((att) => (
+                        <option key={att.attempt_id} value={att.attempt_id}>
+                          {att.attempt_id} · {att.root_event_type}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Event type"
+                      value={interactionEventType}
+                      onChange={(e) =>
+                        setInteractionEventType(
+                          e.target.value as
+                            | 'replied'
+                            | 'meeting_booked'
+                            | 'meeting_held'
+                            | 'follow_up_sent'
+                            | 'note'
+                            | 'opt_out'
+                        )
+                      }
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      <option value="replied">Replied</option>
+                      <option value="follow_up_sent">Follow-up sent</option>
+                      <option value="meeting_booked">Meeting booked</option>
+                      <option value="meeting_held">Meeting held</option>
+                      <option value="note">Note</option>
+                      <option value="opt_out">Opt-out</option>
+                    </select>
+                    <select
+                      aria-label="Outcome"
+                      value={interactionOutcome}
+                      onChange={(e) => setInteractionOutcome(e.target.value)}
+                      className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                    >
+                      <option value="positive">Positive</option>
+                      <option value="neutral">Neutral</option>
+                      <option value="not_interested">Not interested</option>
+                      <option value="scheduled">Scheduled</option>
+                      <option value="attended">Attended</option>
+                      <option value="no_response">No response</option>
+                      <option value="do_not_contact">Do not contact</option>
+                    </select>
+                  </div>
+                  <input
+                    type="text"
+                    value={interactionSummary}
+                    onChange={(e) => setInteractionSummary(e.target.value)}
+                    placeholder="Interaction summary"
+                    className="h-9 w-full rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px]"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowInteractionForm(false)}
+                      className="h-8 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        activityFormSubmitting || !interactionAttemptId
+                      }
+                      onClick={async () => {
+                        setActivityFormSubmitting(true);
+                        setActivityFormError(null);
+                        try {
+                          await createInteraction({
+                            attemptId: interactionAttemptId,
+                            eventType: interactionEventType,
+                            outcome: interactionOutcome,
+                            occurredAt: new Date().toISOString(),
+                            summary: interactionSummary.trim() || null,
+                          });
+                          setShowInteractionForm(false);
+                          setInteractionSummary('');
+                          triggerReload();
+                          onInvalidateDirectory();
+                        } catch (err) {
+                          setActivityFormError(
+                            err instanceof SponsorApiError
+                              ? err.message
+                              : 'Unable to log interaction.'
+                          );
+                        } finally {
+                          setActivityFormSubmitting(false);
+                        }
+                      }}
+                      className="h-8 rounded-md bg-[#315F52] px-3.5 text-[12px] font-medium text-white disabled:opacity-50"
+                    >
+                      {activityFormSubmitting ? 'Saving...' : 'Save interaction'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <DataStateWrapper
+                status={activityStatus}
+                error={activityError}
+                onRetry={triggerReload}
+                loadingSkeleton={
+                  <div className="space-y-3 rounded-md border border-[#D9D7D0] bg-white p-5">
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className="h-10 rounded bg-[#FAF9F6]" />
+                    ))}
+                  </div>
+                }
+              >
+                <div className="overflow-hidden rounded-md border border-[#D9D7D0] bg-white">
+                  {timelineItems.length > 0 ? (
+                    <ul className="divide-y divide-[#E8E6E0]">
+                      {timelineItems.map((item) => (
+                        <li key={item.key} className="px-5 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-[#788C83]">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium capitalize text-[#315F52]">
+                                {item.event_type}
+                              </span>
+                              {item.contact_label ? (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-medium text-[#202824]">
+                                    {item.contact_label}
+                                  </span>
+                                </>
+                              ) : null}
+                              {item.campaign_label ? (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span>{item.campaign_label}</span>
+                                </>
+                              ) : null}
+                              {item.outcome ? (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-mono text-[11px] text-[#525E58]">
+                                    {item.outcome.replace(/_/g, ' ')}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                            <span className="font-mono text-[11px] tabular-nums">
+                              {item.occurred_at}
+                            </span>
+                          </div>
+                          {item.summary ? (
+                            <p className="mt-1.5 text-[13px] text-[#202824]">
+                              {item.summary}
+                            </p>
+                          ) : null}
+                          {item.actor_label ? (
+                            <p className="mt-1 text-[12px] text-[#788C83]">
+                              {item.actor_label}
+                            </p>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="px-6 py-10 text-center">
+                      <p className="text-[13px] font-medium text-[#202824]">
+                        No interactions recorded yet
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </DataStateWrapper>
+            </div>
           ) : null}
 
           {/* 4. Research */}

@@ -27,20 +27,23 @@ export function PaymentTermsDrawer({
   onClose,
   onUpdated,
 }: PaymentTermsDrawerProps) {
-  const [termsChoice, setTermsChoice] = useState('standard 50/50');
-  const [customTerms, setCustomTerms] = useState('');
+  const [termsChoice, setTermsChoice] = useState<
+    'standard_50_50' | '100_upfront' | 'custom'
+  >('standard_50_50');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !contract) return;
-    const current = contract.payment_terms?.trim() || 'standard 50/50';
-    if (current === 'standard 50/50' || current === '100% upfront') {
-      setTermsChoice(current);
-      setCustomTerms('');
-    } else {
+    const raw = (contract.payment_terms ?? 'standard_50_50')
+      .trim()
+      .toLowerCase();
+    if (raw === '100_upfront' || raw === '100% upfront') {
+      setTermsChoice('100_upfront');
+    } else if (raw === 'custom') {
       setTermsChoice('custom');
-      setCustomTerms(current === 'custom' ? '' : current);
+    } else {
+      setTermsChoice('standard_50_50');
     }
     setErrorMsg(null);
     setSubmitting(false);
@@ -52,14 +55,11 @@ export function PaymentTermsDrawer({
     e.preventDefault();
     setErrorMsg(null);
 
-    const finalTerms =
-      termsChoice === 'custom' ? customTerms.trim() || 'custom' : termsChoice;
-
     setSubmitting(true);
     try {
       const updated = await updateContractPaymentTerms(
         contract.contract_id,
-        { payment_terms: finalTerms },
+        { payment_terms: termsChoice },
         permissionProfile
       );
       onUpdated(updated);
@@ -130,7 +130,11 @@ export function PaymentTermsDrawer({
           <select
             id="payment-terms-select"
             value={termsChoice}
-            onChange={(e) => setTermsChoice(e.target.value)}
+            onChange={(e) =>
+              setTermsChoice(
+                e.target.value as 'standard_50_50' | '100_upfront' | 'custom'
+              )
+            }
             className="mt-1.5 h-9 w-full rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
           >
             {PAYMENT_TERMS_OPTIONS.map((opt) => (
@@ -140,25 +144,6 @@ export function PaymentTermsDrawer({
             ))}
           </select>
         </div>
-
-        {termsChoice === 'custom' ? (
-          <div>
-            <label
-              htmlFor="payment-terms-custom"
-              className="block text-[12px] font-medium text-[#202824]"
-            >
-              Custom schedule note
-            </label>
-            <input
-              id="payment-terms-custom"
-              type="text"
-              value={customTerms}
-              onChange={(e) => setCustomTerms(e.target.value)}
-              placeholder="e.g. 60/40 net 15"
-              className="mt-1.5 h-9 w-full rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
-            />
-          </div>
-        ) : null}
 
         <div className="flex items-center justify-end gap-2.5 border-t border-[#E8E6E0] pt-4">
           <button

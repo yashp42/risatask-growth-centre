@@ -67,7 +67,8 @@ function matchesDocumentedPendingRoute(path: string): boolean {
 export function createFoundationApiRouter(
   config: ServerConfig,
   dbState: DatabasePoolState,
-  authDeps: AuthDependencies
+  authDeps: AuthDependencies,
+  getLlmHealth?: () => Promise<Record<string, unknown>>
 ): Router {
   const router = Router();
   const authMiddleware = requireAuth(authDeps);
@@ -326,15 +327,19 @@ export function createFoundationApiRouter(
           role_directory_provisioned:
             dbHealth.tables.team_member && dbHealth.tables.role_assignment,
         },
-        llm: {
-          provider: 'openrouter',
-          orchestration_implemented: false,
-          api_key_configured: config.readiness.openrouterKeyConfigured,
-          model_configured: config.readiness.openrouterModelConfigured,
-          free_tier_verified: config.readiness.openrouterFreeTierValid,
-          paid_fallback_allowed: false,
-          auto_routing_allowed: false,
-        },
+        llm: getLlmHealth
+          ? await getLlmHealth()
+          : {
+              provider: 'openrouter',
+              orchestration_implemented: false,
+              api_key_configured: config.readiness.openrouterKeyConfigured,
+              model_configured: config.readiness.openrouterModelConfigured,
+              free_tier_verified: config.readiness.openrouterFreeTierValid,
+              tools_supported: false,
+              fallback_verified: config.readiness.openrouterFallbackValid ?? false,
+              paid_fallback_allowed: false,
+              auto_routing_allowed: false,
+            },
         config_validation: {
           valid: config.validationErrors.length === 0,
           error_count: config.validationErrors.length,

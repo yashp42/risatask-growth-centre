@@ -62,12 +62,13 @@ const SALES_GRANT: Partial<Record<BusinessEntityDomain, RoleGrantRule>> = {
     read: 'own',
     update: 'own',
   },
-  opportunities_stage: { create: 'own', read: 'own', update: 'own' },
+  opportunities_stage: { create: 'own', read: 'own', update: 'own', approve: 'own' },
   proposals: { create: 'own', read: 'own', update: 'own' },
   contracts_lines: {
     create: 'own',
     read: 'own',
     update: 'own',
+    approve: 'own',
     condition: 'Update permitted only before signing.',
   },
   payment_schedule_invoices: { read: 'all' },
@@ -193,8 +194,11 @@ export const PERMISSION_MATRIX: RolePermissionMatrix = {
     forecast_versions: { read: 'all' },
     escalations: { read: 'all' },
   },
-  // Standalone admin role is kept separate from business roles (OD-24).
-  admin: {},
+  // Standalone admin role is kept separate from business roles (OD-24):
+  // team/role administration + read access to audit and AI logs.
+  admin: {
+    audit_ai_logs: { read: 'all' },
+  },
 };
 
 export interface PermissionDecision {
@@ -207,6 +211,23 @@ export interface PermissionDecision {
 
 export function isCanonicalRole(value: string): value is CanonicalRole {
   return CANONICAL_ROLE_SET.has(value as CanonicalRole);
+}
+
+export const SALES_ROLE_SET: ReadonlySet<CanonicalRole> = new Set([
+  'partnerships',
+  'community',
+  'network',
+  'premium_sales',
+]);
+
+export function canConfirmOpportunity(
+  roles: ReadonlyArray<CanonicalRole>,
+  isOwner: boolean
+): boolean {
+  if (!roles || roles.length === 0) return false;
+  if (roles.includes('coordination_lead')) return true;
+  if (isOwner && roles.some((r) => SALES_ROLE_SET.has(r))) return true;
+  return false;
 }
 
 export function evaluatePermission(

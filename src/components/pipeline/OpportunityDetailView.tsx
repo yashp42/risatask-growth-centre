@@ -23,6 +23,7 @@ import {
 } from '../../services/campaignsApi';
 import {
   PipelineApiError,
+  canUserConfirmDeal,
   canUserEditOpportunity,
   createOpportunityTask,
   fetchOpportunityById,
@@ -32,6 +33,7 @@ import {
   fetchOpportunityTasks,
   formatMeetingStatus,
   formatProposalStatus,
+  isOpenStage,
   isOpportunityReadOnly,
   updateOpportunityTaskStatus,
 } from '../../services/pipelineApi';
@@ -72,6 +74,7 @@ interface OpportunityDetailViewProps {
   onBack: () => void;
   onEditMetadata: (opportunity: OpportunityEntity) => void;
   onUpdateStage: (opportunity: OpportunityEntity) => void;
+  onConfirmDeal?: (opportunity: OpportunityEntity) => void;
   onOpenSponsor?: (sponsorId: string) => void;
   onOpenCampaign?: (campaignId: string) => void;
   onInvalidatePipeline: () => void;
@@ -97,6 +100,7 @@ export function OpportunityDetailView({
   onBack,
   onEditMetadata,
   onUpdateStage,
+  onConfirmDeal,
   onOpenSponsor,
   onOpenCampaign,
   onInvalidatePipeline,
@@ -357,6 +361,12 @@ export function OpportunityDetailView({
   const editable = opportunity
     ? !isHistorical2025 && canUserEditOpportunity(opportunity, permissions)
     : false;
+  const confirmable = opportunity
+    ? !isHistorical2025 &&
+      isOpenStage(opportunity.current_stage_version?.stage) &&
+      !opportunity.has_contract &&
+      canUserConfirmDeal(opportunity, permissions)
+    : false;
   const curStage = opportunity?.current_stage_version ?? null;
   const proposals = opportunity?.proposals ?? [];
 
@@ -551,14 +561,24 @@ export function OpportunityDetailView({
                         if (!editable || isHistorical2025) return;
                         onUpdateStage(opportunity);
                       }}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#315F52] px-3.5 text-[13px] font-medium text-white hover:bg-[#264B40] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#D9D7D0] bg-white px-3.5 text-[13px] font-medium text-[#202824] hover:bg-[#FAF9F6] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <GitCommitHorizontal
-                        className="h-3.5 w-3.5"
+                        className="h-3.5 w-3.5 text-[#525E58]"
                         aria-hidden="true"
                       />
                       Update stage
                     </button>
+                    {confirmable && onConfirmDeal ? (
+                      <button
+                        type="button"
+                        onClick={() => onConfirmDeal(opportunity)}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#315F52] px-3.5 text-[13px] font-medium text-white hover:bg-[#264B40]"
+                      >
+                        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                        Confirm deal
+                      </button>
+                    ) : null}
                   </>
                 ) : null}
               </div>

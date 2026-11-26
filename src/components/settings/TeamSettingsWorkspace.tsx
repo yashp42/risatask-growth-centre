@@ -1,7 +1,22 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Check, Pencil, Play, RefreshCw, X } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import {
+  AlertCircle,
+  Check,
+  Link2,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  ShieldPlus,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSeason } from '../../contexts/SeasonContext';
+import {
+  isHistoricalReadOnlyEdition,
+  READ_ONLY_2025_MESSAGE,
+} from '../../lib/dateIst';
 import {
   fetchAdminHealth,
   runAdminParityCheck,
@@ -13,6 +28,15 @@ import {
   fetchTeamRoster,
   type TeamDirectoryMember,
 } from '../../services/tasksApi';
+import {
+  ALL_CANONICAL_ROLE_OPTIONS,
+  assignMemberRole,
+  createTeamMember,
+  endMemberRole,
+  linkMemberAuthUser,
+  TeamAdminApiError,
+} from '../../services/teamAdminApi';
+import type { CanonicalRole } from '../../types/sponsors';
 
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return '—';
@@ -22,6 +46,7 @@ function formatCellValue(value: unknown): string {
 }
 
 export function TeamSettingsWorkspace() {
+  const queryClient = useQueryClient();
   const { member, refreshIdentity } = useAuth();
   const { editionId, recordClass, asOf } = useSeason();
   const [editingName, setEditingName] = useState(false);
@@ -40,6 +65,32 @@ export function TeamSettingsWorkspace() {
   const [teamRoster, setTeamRoster] = useState<TeamDirectoryMember[]>([]);
   const [teamLoading, setTeamLoading] = useState<boolean>(true);
   const [teamError, setTeamError] = useState<string | null>(null);
+  const [teamNonce, setTeamNonce] = useState(0);
+
+  // Team & role administration state (coordination_lead or admin only)
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminSuccess, setAdminSuccess] = useState<string | null>(null);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberEmail, setNewMemberEmail] = useState('');
+  const [creatingMember, setCreatingMember] = useState(false);
+
+  const [showAssignRole, setShowAssignRole] = useState(false);
+  const [assignTargetMemberId, setAssignTargetMemberId] = useState('');
+  const [assignRoleChoice, setAssignRoleChoice] =
+    useState<CanonicalRole>('partnerships');
+  const [assigningRole, setAssigningRole] = useState(false);
+
+  const [linkingMemberId, setLinkingMemberId] = useState<string | null>(null);
+  const [linkAuthUuid, setLinkAuthUuid] = useState('');
+  const [linkingAuth, setLinkingAuth] = useState(false);
+  const [endingRoleId, setEndingRoleId] = useState<string | null>(null);
+
+  const canManageTeam = Boolean(
+    member?.roles.includes('coordination_lead') ||
+      member?.roles.includes('admin')
+  );
+  const isHistorical = isHistoricalReadOnlyEdition(editionId, recordClass);
 
   const loadHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -68,6 +119,11 @@ export function TeamSettingsWorkspace() {
     fetchTeamRoster(editionId, recordClass, controller.signal)
       .then((rows) => {
         setTeamRoster(rows);
+        setAssignTargetMemberId((prev) =>
+          prev && rows.some((r) => r.member_id === prev)
+            ? prev
+            : rows[0]?.member_id ?? ''
+        );
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -84,7 +140,128 @@ export function TeamSettingsWorkspace() {
         }
       });
     return () => controller.abort();
-  }, [editionId, recordClass]);
+  }, [editionId, recordClass, teamNonce]);
+
+  const refreshTeamAfterAdminChange = useCallback(async () => {
+    setTeamNonce((n) => n + 1);
+    await refreshIdentity();
+    void queryClient.invalidateQueries();
+  }, [queryClient, refreshIdentity]);
+
+  const handleCreateMember = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!canManageTeam || isHistorical) return;
+    setAdminError(null);
+    setAdminSuccess(null);
+    if (!newMemberName.trim()) {
+      setAdminError('Full name is required.');
+      return;
+    }
+    setCreatingMember(true);
+    try {
+      const created = await createTeamMember({
+        full_name: newMemberName.trim(),
+        email: newMemberEmail.trim() || null,
+        edition_id: editionId,
+        record_class: recordClass,
+      });
+      setNewMemberName('');
+      setNewMemberEmail('');
+      setShowAddMember(false);
+      setAdminSuccess(
+        `Created team member ${created.member_id} (Unlinked until an Auth User ID is linked).`
+      );
+      await refreshTeamAfterAdminChange();
+    } catch (err: unknown) {
+      setAdminError(
+        err instanceof TeamAdminApiError
+          ? err.message
+          : 'Unable to create team member.'
+      );
+    } finally {
+      setCreatingMember(false);
+    }
+  };
+
+  const handleAssignRole = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!canManageTeam || isHistorical) return;
+    setAdminError(null);
+    setAdminSuccess(null);
+    if (!assignTargetMemberId) {
+      setAdminError('Select a team member.');
+      return;
+    }
+    setAssigningRole(true);
+    try {
+      const assigned = await assignMemberRole({
+        member_id: assignTargetMemberId,
+        role: assignRoleChoice,
+        edition_id: editionId,
+        record_class: recordClass,
+      });
+      setShowAssignRole(false);
+      setAdminSuccess(
+        `Assigned role "${assignRoleChoice}" (${assigned.role_assignment_id}).`
+      );
+      await refreshTeamAfterAdminChange();
+    } catch (err: unknown) {
+      setAdminError(
+        err instanceof TeamAdminApiError
+          ? err.message
+          : 'Unable to assign role.'
+      );
+    } finally {
+      setAssigningRole(false);
+    }
+  };
+
+  const handleLinkAuthUser = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!canManageTeam || isHistorical || !linkingMemberId) return;
+    setAdminError(null);
+    setAdminSuccess(null);
+    if (!linkAuthUuid.trim()) {
+      setAdminError('Supabase Auth User UUID is required.');
+      return;
+    }
+    setLinkingAuth(true);
+    try {
+      await linkMemberAuthUser(linkingMemberId, linkAuthUuid, editionId);
+      setAdminSuccess(`Linked login UUID to member ${linkingMemberId}.`);
+      setLinkingMemberId(null);
+      setLinkAuthUuid('');
+      await refreshTeamAfterAdminChange();
+    } catch (err: unknown) {
+      setAdminError(
+        err instanceof TeamAdminApiError
+          ? err.message
+          : 'Unable to link auth user ID.'
+      );
+    } finally {
+      setLinkingAuth(false);
+    }
+  };
+
+  const handleEndRole = async (roleAssignmentId: string) => {
+    if (!canManageTeam || isHistorical) return;
+    setAdminError(null);
+    setAdminSuccess(null);
+    setEndingRoleId(roleAssignmentId);
+    try {
+      await endMemberRole(roleAssignmentId, editionId);
+      setAdminSuccess(`Ended role assignment ${roleAssignmentId}.`);
+      await refreshTeamAfterAdminChange();
+    } catch (err: unknown) {
+      setAdminError(
+        err instanceof TeamAdminApiError
+          ? err.message
+          : 'Unable to end role assignment.'
+      );
+    } finally {
+      setEndingRoleId(null);
+    }
+  };
 
   const handleRunParity = async () => {
     setParityLoading(true);
@@ -261,7 +438,7 @@ export function TeamSettingsWorkspace() {
         aria-labelledby="team-roster-heading"
         className="rounded-md border border-[#D9D7D0] bg-white p-6"
       >
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2
               id="team-roster-heading"
@@ -273,10 +450,204 @@ export function TeamSettingsWorkspace() {
               {recordClass} · {editionId} · As of {asOf}
             </p>
           </div>
-          <span className="font-mono text-[12px] text-[#525E58]">
-            {teamLoading ? 'Loading…' : `${teamRoster.length} members`}
-          </span>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 font-mono text-[12px] text-[#525E58]">
+              {teamLoading ? 'Loading…' : `${teamRoster.length} members`}
+            </span>
+            {canManageTeam ? (
+              <>
+                <button
+                  type="button"
+                  disabled={isHistorical}
+                  title={isHistorical ? READ_ONLY_2025_MESSAGE : undefined}
+                  onClick={() => {
+                    setShowAddMember((v) => !v);
+                    setShowAssignRole(false);
+                    setAdminError(null);
+                  }}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Plus className="h-3.5 w-3.5 text-[#315F52]" />
+                  Add member
+                </button>
+                <button
+                  type="button"
+                  disabled={isHistorical || teamRoster.length === 0}
+                  title={isHistorical ? READ_ONLY_2025_MESSAGE : undefined}
+                  onClick={() => {
+                    setShowAssignRole((v) => !v);
+                    setShowAddMember(false);
+                    setAdminError(null);
+                  }}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#274D42] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <ShieldPlus className="h-3.5 w-3.5" />
+                  Assign role
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
+
+        {adminError ? (
+          <div
+            role="alert"
+            className="mt-4 flex items-start gap-2 rounded-md border border-[#9B3B32]/30 bg-[#9B3B32]/5 px-4 py-3 text-[13px] text-[#9B3B32]"
+          >
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{adminError}</span>
+          </div>
+        ) : null}
+
+        {adminSuccess ? (
+          <div className="mt-4 rounded-md border border-[#315F52]/30 bg-[#315F52]/5 px-4 py-2.5 text-[12px] text-[#315F52]">
+            {adminSuccess}
+          </div>
+        ) : null}
+
+        {canManageTeam && showAddMember ? (
+          <form
+            onSubmit={handleCreateMember}
+            className="mt-4 rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-4"
+          >
+            <h3 className="text-[13px] font-semibold text-[#202824]">
+              New team member ({editionId})
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <input
+                type="text"
+                value={newMemberName}
+                onChange={(e) => setNewMemberName(e.target.value)}
+                placeholder="Full name (required)"
+                className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+                required
+              />
+              <input
+                type="email"
+                value={newMemberEmail}
+                onChange={(e) => setNewMemberEmail(e.target.value)}
+                placeholder="Email (optional)"
+                className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+              />
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAddMember(false)}
+                className="h-8 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creatingMember}
+                className="h-8 rounded-md bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#274D42] disabled:opacity-50"
+              >
+                {creatingMember ? 'Creating...' : 'Create member'}
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        {canManageTeam && showAssignRole ? (
+          <form
+            onSubmit={handleAssignRole}
+            className="mt-4 rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-4"
+          >
+            <h3 className="text-[13px] font-semibold text-[#202824]">
+              Assign role in {editionId}
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <select
+                value={assignTargetMemberId}
+                onChange={(e) => setAssignTargetMemberId(e.target.value)}
+                aria-label="Member"
+                className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+              >
+                {teamRoster.map((tm) => (
+                  <option key={tm.member_id} value={tm.member_id}>
+                    {tm.full_name} ({tm.member_id})
+                  </option>
+                ))}
+              </select>
+              <select
+                value={assignRoleChoice}
+                onChange={(e) =>
+                  setAssignRoleChoice(e.target.value as CanonicalRole)
+                }
+                aria-label="Role"
+                className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+              >
+                {ALL_CANONICAL_ROLE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAssignRole(false)}
+                className="h-8 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={assigningRole}
+                className="h-8 rounded-md bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#274D42] disabled:opacity-50"
+              >
+                {assigningRole ? 'Assigning...' : 'Save role assignment'}
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        {canManageTeam && linkingMemberId ? (
+          <form
+            onSubmit={handleLinkAuthUser}
+            className="mt-4 rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-4"
+          >
+            <h3 className="text-[13px] font-semibold text-[#202824]">
+              Link Supabase Auth User ID for {linkingMemberId}
+            </h3>
+            <p className="mt-1 text-[12px] text-[#525E58]">
+              Once linked, this member can authenticate via Supabase and claim
+              their assigned roles. Linking is one-time per member.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                type="text"
+                value={linkAuthUuid}
+                onChange={(e) => setLinkAuthUuid(e.target.value)}
+                placeholder="Supabase auth_user_id UUID (e.g. 550e8400-e29b-41d4-a716-446655440000)"
+                className="h-9 flex-1 rounded-md border border-[#D9D7D0] bg-white px-3 font-mono text-[12px] text-[#202824] focus:border-[#315F52] focus:outline-none"
+                required
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLinkingMemberId(null);
+                    setLinkAuthUuid('');
+                  }}
+                  className="h-9 rounded-md border border-[#D9D7D0] bg-white px-3 text-[12px] font-medium text-[#202824] hover:bg-[#FAF9F6]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={linkingAuth}
+                  className="h-9 rounded-md bg-[#315F52] px-3 text-[12px] font-medium text-white hover:bg-[#274D42] disabled:opacity-50"
+                >
+                  {linkingAuth ? 'Linking...' : 'Link login'}
+                </button>
+              </div>
+            </div>
+          </form>
+        ) : null}
 
         {teamError ? (
           <div
@@ -301,27 +672,102 @@ export function TeamSettingsWorkspace() {
                 <tr>
                   <th className="px-4 py-2.5">Member</th>
                   <th className="px-4 py-2.5">Member ID</th>
-                  <th className="px-4 py-2.5">Roles</th>
+                  <th className="px-4 py-2.5">Login</th>
+                  <th className="px-4 py-2.5">Roles ({editionId})</th>
                   <th className="px-4 py-2.5">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E8E6E0] bg-white">
-                {teamRoster.map((tm) => (
-                  <tr key={tm.member_id} className="hover:bg-[#FAF9F6]">
-                    <td className="px-4 py-2.5 font-medium text-[#202824]">
-                      {tm.full_name}
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-[12px] text-[#525E58]">
-                      {tm.member_id}
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-[12px] text-[#315F52]">
-                      {tm.roles && tm.roles.length > 0 ? tm.roles.join(', ') : '—'}
-                    </td>
-                    <td className="px-4 py-2.5 text-[12px] text-[#525E58]">
-                      {tm.is_active ? 'Active' : 'Inactive'}
-                    </td>
-                  </tr>
-                ))}
+                {teamRoster.map((tm) => {
+                  const assignments = tm.role_assignments ?? [];
+                  const isUnlinked = tm.auth_linked === false;
+                  return (
+                    <tr key={tm.member_id} className="hover:bg-[#FAF9F6]">
+                      <td className="px-4 py-2.5">
+                        <div className="font-medium text-[#202824]">
+                          {tm.full_name}
+                        </div>
+                        {tm.email ? (
+                          <div className="text-[11px] text-[#788C83]">
+                            {tm.email}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[12px] text-[#525E58]">
+                        {tm.member_id}
+                      </td>
+                      <td className="px-4 py-2.5 text-[12px]">
+                        {isUnlinked ? (
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-[#9B6B2E]">
+                              Unlinked
+                            </span>
+                            {canManageTeam ? (
+                              <button
+                                type="button"
+                                disabled={isHistorical}
+                                title={
+                                  isHistorical
+                                    ? READ_ONLY_2025_MESSAGE
+                                    : undefined
+                                }
+                                onClick={() => {
+                                  setLinkingMemberId(tm.member_id);
+                                  setLinkAuthUuid('');
+                                  setAdminError(null);
+                                }}
+                                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#315F52] hover:underline disabled:opacity-50"
+                              >
+                                <Link2 className="h-3 w-3" />
+                                Link Auth ID
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-[#315F52]">Linked</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[12px] text-[#315F52]">
+                        {assignments.length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {assignments.map((a) => (
+                              <span
+                                key={a.role_assignment_id}
+                                className="inline-flex items-center gap-1.5 rounded border border-[#D9D7D0] bg-[#FAF9F6] px-2 py-0.5 text-[11px] text-[#202824]"
+                              >
+                                <span>{a.role}</span>
+                                {canManageTeam ? (
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      isHistorical ||
+                                      endingRoleId === a.role_assignment_id
+                                    }
+                                    title={`End ${a.role}`}
+                                    aria-label={`End ${a.role} for ${tm.full_name}`}
+                                    onClick={() =>
+                                      void handleEndRole(a.role_assignment_id)
+                                    }
+                                    className="text-[#9B3B32] hover:text-[#7F1D1D] disabled:opacity-40"
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
+                              </span>
+                            ))}
+                          </div>
+                        ) : tm.roles && tm.roles.length > 0 ? (
+                          tm.roles.join(', ')
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-[12px] text-[#525E58]">
+                        {tm.is_active === false ? 'Inactive' : 'Active'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

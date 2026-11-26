@@ -85,12 +85,12 @@ export const CONTACT_DECISION_ROLE_OPTIONS: FilterOption[] = [
  * Provisional consent basis suggestions; backend enum list is open pending OD-28 / DPDP spec.
  */
 export const CONTACT_CONSENT_BASIS_SUGGESTIONS: ReadonlyArray<string> = [
-  'inbound_form',
-  'warm_introduction',
-  'business_card',
-  'direct_consent',
-  'public_listing',
-  'past_partnership',
+  'legitimate_interest',
+  'inbound_consent',
+  'referral_intro',
+  'prior_sponsor',
+  'public_directory',
+  'unknown',
 ];
 
 export function getDefaultSponsorEditionForClass(
@@ -1065,4 +1065,104 @@ export function deriveSponsorCampaigns(
   return Array.from(map.values()).sort((a, b) =>
     a.campaign_name.localeCompare(b.campaign_name)
   );
+}
+
+export async function createOutreachAttempt(payload: {
+  campaignId: string;
+  sponsorId: string;
+  contactId?: string | null;
+  rootEventType: 'outreach_sent' | 'introduction_received' | 'web_inbound';
+  startedAt?: string;
+  outcome?: string | null;
+  summary?: string | null;
+}): Promise<{ id: string; dataVersion?: number }> {
+  return requestJson<{ id: string; dataVersion?: number }>(
+    OVERVIEW_API_ENDPOINTS.outreach,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function createInteraction(payload: {
+  attemptId: string;
+  eventType:
+    | 'outreach_sent'
+    | 'delivered'
+    | 'replied'
+    | 'meeting_booked'
+    | 'meeting_held'
+    | 'opt_out'
+    | 'introduction_received'
+    | 'web_inbound'
+    | 'bounced'
+    | 'meeting_cancelled'
+    | 'follow_up_sent'
+    | 'note';
+  outcome?: string | null;
+  occurredAt?: string;
+  summary?: string | null;
+}): Promise<{ id: string; dataVersion?: number }> {
+  return requestJson<{ id: string; dataVersion?: number }>(
+    OVERVIEW_API_ENDPOINTS.interactions,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function recordSponsorQualification(payload: {
+  sponsorId: string;
+  sourceCampaignId?: string | null;
+  status: 'unreviewed' | 'engaged' | 'qualified' | 'unqualified' | 'dormant';
+  reason?: string | null;
+  checklistPassed?: boolean | null;
+  editionId?: string;
+}): Promise<{ id: string; dataVersion?: number }> {
+  return requestJson<{ id: string; dataVersion?: number }>(
+    OVERVIEW_API_ENDPOINTS.qualifications,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function reassignSponsorOwnership(payload: {
+  subjectType: 'sponsor';
+  subjectId: string;
+  memberId: string;
+  reason?: string | null;
+  editionId?: string;
+}): Promise<{ id: string; dataVersion?: number }> {
+  return requestJson<{ id: string; dataVersion?: number }>(
+    OVERVIEW_API_ENDPOINTS.ownership,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function fetchSponsorTeamRoster(
+  editionId: string,
+  recordClass: SponsorRecordClass,
+  signal?: AbortSignal
+): Promise<Array<{ member_id: string; full_name: string }>> {
+  try {
+    const params = new URLSearchParams({ edition_id: editionId });
+    if (recordClass !== 'external_research') {
+      params.set('record_class', recordClass);
+    }
+    const res = await requestJson<{
+      team?: Array<{ member_id: string; full_name: string }>;
+      members?: Array<{ member_id: string; full_name: string }>;
+    }>(`${OVERVIEW_API_ENDPOINTS.team}?${params.toString()}`, { signal });
+    return res.team ?? res.members ?? [];
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    return [];
+  }
 }

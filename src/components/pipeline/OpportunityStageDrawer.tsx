@@ -103,22 +103,7 @@ export function OpportunityStageDrawer({
       return;
     }
 
-    let parsedConfirmed: number | null = 0;
-    if (isConfirmedStage) {
-      if (confirmedValue.trim() === '') {
-        setFormError(
-          'Confirmed signed value is required when moving to Confirmed partnership.'
-        );
-        return;
-      }
-      parsedConfirmed = Number(confirmedValue);
-      if (!Number.isFinite(parsedConfirmed) || parsedConfirmed <= 0) {
-        setFormError(
-          'Confirmed signed value must be greater than zero at partner_confirmed.'
-        );
-        return;
-      }
-    }
+    const parsedConfirmed: number | null = 0;
 
     const payload: OpportunityStageTransitionPayload = {
       stage,
@@ -213,16 +198,17 @@ export function OpportunityStageDrawer({
               }}
               className="mt-1 h-9 w-full rounded-md border border-[#D9D7D0] bg-white px-3 text-[13px] text-[#202824] focus:border-[#315F52] focus:outline-none disabled:bg-[#FAF9F6]"
             >
-              {ALL_OPPORTUNITY_STAGES.map((st) => (
-                <option
-                  key={st}
-                  value={st}
-                  disabled={st === 'partner_confirmed' && !allowConfirm}
-                >
+              {ALL_OPPORTUNITY_STAGES.filter(
+                (st) => st !== 'partner_confirmed'
+              ).map((st) => (
+                <option key={st} value={st}>
                   {formatOpportunityStage(st)}
                 </option>
               ))}
             </select>
+            <p className="mt-1 text-[11px] text-[#788C83]">
+              To mark a partnership confirmed, use Confirm deal so the signed contract is recorded atomically.
+            </p>
           </div>
 
           <div>

@@ -54,9 +54,8 @@ export function ReceiptFormDrawer({
   const [sponsorId, setSponsorId] = useState('');
   const [receivedAt, setReceivedAt] = useState('');
   const [amount, setAmount] = useState('');
-  const [method, setMethod] = useState<ReceiptMethod>('bank transfer');
+  const [method, setMethod] = useState<ReceiptMethod>('bank_transfer');
   const [bankReference, setBankReference] = useState('');
-  const [reconciled, setReconciled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -68,9 +67,8 @@ export function ReceiptFormDrawer({
     setSponsorId(initialSponsor?.sponsor_id ?? '');
     setReceivedAt(new Date().toISOString().slice(0, 10));
     setAmount('');
-    setMethod('bank transfer');
+    setMethod('bank_transfer');
     setBankReference('');
-    setReconciled(false);
     setErrorMsg(null);
     setSubmitting(false);
   }, [open, defaultSponsorId]);
@@ -106,7 +104,7 @@ export function ReceiptFormDrawer({
           amount: numericAmount,
           method,
           bank_reference: bankReference.trim(),
-          reconciled,
+          reconciled: false,
           record_class: activeRecordClass,
         },
         permissionProfile
@@ -263,27 +261,16 @@ export function ReceiptFormDrawer({
           </div>
         </div>
 
-        <label className="flex items-start gap-2.5 rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-3">
-          <input
-            type="checkbox"
-            checked={reconciled}
-            onChange={(e) => setReconciled(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-[#D9D7D0] text-[#315F52] focus:ring-[#315F52]"
-          />
-          <span className="text-[12px] text-[#202824]">
-            <span className="font-medium">Bank statement verified</span>
-            <span className="mt-0.5 block text-[#525E58]">
-              Leave unchecked if bank clearance is still pending. Receipts remain
-              uncounted toward collected cash until reconciled and allocated to
-              an invoice or schedule item.
-            </span>
+        <div className="rounded-md border border-[#D9D7D0] bg-[#FAF9F6] p-3 text-[12px] text-[#202824]">
+          <span className="font-medium">
+            Step 1 of 2 — Logged as unreconciled
           </span>
-        </label>
-
-        <p className="rounded-md border border-[#E8E6E0] bg-[#FAF9F6] px-3 py-2 text-[12px] text-[#525E58]">
-          Receipts cannot be edited, voided, or deleted once saved. Allocation
-          and post-entry bank reconciliation are not yet available.
-        </p>
+          <span className="mt-0.5 block text-[#525E58]">
+            New receipts always start unreconciled (received, not yet counted
+            toward collected cash). After saving, allocate the receipt to an
+            invoice or schedule item and mark it reconciled on the Receipts tab.
+          </span>
+        </div>
 
         <div className="flex items-center justify-end gap-2.5 border-t border-[#E8E6E0] pt-4">
           <button

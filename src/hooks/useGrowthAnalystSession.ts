@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSeason } from '../contexts/SeasonContext';
 import {
   AnalystApiError,
   cancelAiAction,
+  cancelAiActionBatch,
   confirmAiAction,
+  confirmAiActionBatch,
+  fetchAiQuota,
   fetchAnalystConversation,
   getAnalystPermissionProfile,
   getDefaultAnalystEditionForClass,
   sendAnalystChatMessage,
+  submitAiFeedback,
+  tryResolveMetricShortcut,
 } from '../services/analystApi';
 import { fetchAnalyticsDataVersion } from '../services/analyticsApi';
 import {
@@ -15,8 +21,10 @@ import {
 } from '../services/sponsorsApi';
 import type {
   AiActionRecord,
+  AiBatchResolutionResponse,
   AiChatMessage,
   AiPermissionProfile,
+  AiQuotaInfo,
   AiRecordClass,
   AiStructuredResponse,
 } from '../types/analyst';
@@ -59,27 +67,31 @@ export interface UseGrowthAnalystSessionResult {
   error: AnalystApiError | null;
   actionProcessingId: string | null;
   actionErrorById: Record<string, string>;
+  batchProcessingId: string | null;
+  batchErrorById: Record<string, string>;
+  quota: AiQuotaInfo | null;
   permissionProfile: AiPermissionProfile;
   sendMessage: (text: string) => Promise<void>;
   confirmAction: (actionId: string) => Promise<void>;
   cancelAction: (actionId: string) => Promise<void>;
+  confirmBatch: (batchId: string) => Promise<AiBatchResolutionResponse | null>;
+  cancelBatch: (batchId: string) => Promise<void>;
+  submitFeedback: (
+    messageId: string,
+    queryId: string,
+    rating: 'up' | 'down'
+  ) => Promise<void>;
+  refreshQuota: () => Promise<void>;
   resetConversation: () => void;
   dismissError: () => void;
   clearDataVersionChanged: () => void;
-}
-
-function createInitialFilters(): GrowthAnalystSessionFilterState {
-  return {
-    record_class: 'simulated',
-    edition_id: getDefaultAnalystEditionForClass('simulated'),
-    as_of: new Date().toISOString().slice(0, 10),
-  };
 }
 
 export function useGrowthAnalystSession(
   contextMeta: GrowthAnalystWorkspaceContextMeta,
   onAfterActionExecuted?: () => void
 ): UseGrowthAnalystSessionResult {
+  const season = useSeason();
   const [conversationId, setConversationId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const paramId = new URLSearchParams(window.location.search).get(
@@ -92,8 +104,11 @@ export function useGrowthAnalystSession(
   const [actionsMap, setActionsMap] = useState<Record<string, AiActionRecord>>(
     {}
   );
-  const [filters, setFilters] =
-    useState<GrowthAnalystSessionFilterState>(createInitialFilters);
+  const [filters, setFilters] = useState<GrowthAnalystSessionFilterState>(() => ({
+    record_class: season.recordClass,
+    edition_id: season.editionId,
+    as_of: season.asOf,
+  }));
   const [dataVersion, setDataVersion] = useState<string | number | null>(null);
   const [dataVersionChanged, setDataVersionChanged] = useState(false);
 
@@ -106,6 +121,13 @@ export function useGrowthAnalystSession(
   const [actionErrorById, setActionErrorById] = useState<
     Record<string, string>
   >({});
+  const [batchProcessingId, setBatchProcessingId] = useState<string | null>(
+    null
+  );
+  const [batchErrorById, setBatchErrorById] = useState<Record<string, string>>(
+    {}
+  );
+  const [quota, setQuota] = useState<AiQuotaInfo | null>(null);
 
   const [permissions, setPermissions] = useState<UserPermissionContext>(
     DEFAULT_UNVERIFIED_PERMISSIONS
@@ -118,10 +140,30 @@ export function useGrowthAnalystSession(
   const sendingRef = useRef(false);
   const lastObservedVersionRef = useRef<string | number | null>(null);
 
+  // Sync analyst scope whenever global season switcher changes
+  useEffect(() => {
+    setFilters((prev) => ({
+      ...prev,
+      record_class: season.recordClass,
+      edition_id: season.editionId,
+      as_of: season.asOf,
+    }));
+  }, [season.recordClass, season.editionId, season.asOf]);
+
+  const refreshQuota = useCallback(async () => {
+    const nextQuota = await fetchAiQuota();
+    if (nextQuota) {
+      setQuota(nextQuota);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     fetchCurrentUserPermissions(controller.signal).then((ctx) => {
       setPermissions(ctx);
+    });
+    fetchAiQuota(controller.signal).then((q) => {
+      if (q) setQuota(q);
     });
     return () => controller.abort();
   }, []);
@@ -282,17 +324,29 @@ export function useGrowthAnalystSession(
       setMessages((prev) => [...prev, optimisticUserMessage]);
 
       try {
-        const structured = await sendAnalystChatMessage({
+        const requestPayload = {
           conversation_id: conversationId,
           message: trimmed,
           record_class: filters.record_class,
           edition_id: filters.edition_id,
           as_of: filters.as_of,
           filters: effectiveRequestFilters,
-        });
+        };
 
-        if (structured.conversation_id) {
+        // Metric-card shortcut: answer direct metric queries without spending an OpenRouter call
+        const shortcutResult = await tryResolveMetricShortcut(
+          requestPayload
+        ).catch(() => null);
+
+        const structured =
+          shortcutResult ?? (await sendAnalystChatMessage(requestPayload));
+
+        if (!structured.shortcut && structured.conversation_id) {
           setConversationId(structured.conversation_id);
+        }
+
+        if (structured.quota) {
+          setQuota(structured.quota);
         }
 
         if (
@@ -429,12 +483,103 @@ export function useGrowthAnalystSession(
     [actionProcessingId, actionsMap]
   );
 
+  const confirmBatch = useCallback(
+    async (batchId: string): Promise<AiBatchResolutionResponse | null> => {
+      if (!batchId || batchProcessingId) return null;
+      setBatchProcessingId(batchId);
+      setBatchErrorById((prev) => {
+        const next = { ...prev };
+        delete next[batchId];
+        return next;
+      });
+
+      try {
+        const res = await confirmAiActionBatch(batchId);
+        if (res.actions.length > 0) {
+          setActionsMap((prev) => {
+            const next = { ...prev };
+            for (const act of res.actions) {
+              next[act.ai_action_id] = act;
+            }
+            return next;
+          });
+        }
+        if (res.data_version !== undefined && res.data_version !== null) {
+          lastObservedVersionRef.current = res.data_version;
+          setDataVersion(res.data_version);
+        }
+        onAfterActionExecuted?.();
+        return res;
+      } catch (err: unknown) {
+        setBatchErrorById((prev) => ({
+          ...prev,
+          [batchId]:
+            err instanceof AnalystApiError
+              ? err.message
+              : 'Unable to apply proposed changes right now.',
+        }));
+        return null;
+      } finally {
+        setBatchProcessingId(null);
+      }
+    },
+    [batchProcessingId, onAfterActionExecuted]
+  );
+
+  const cancelBatch = useCallback(
+    async (batchId: string) => {
+      if (!batchId || batchProcessingId) return;
+      setBatchProcessingId(batchId);
+      setBatchErrorById((prev) => {
+        const next = { ...prev };
+        delete next[batchId];
+        return next;
+      });
+      try {
+        const res = await cancelAiActionBatch(batchId);
+        if (res.actions.length > 0) {
+          setActionsMap((prev) => {
+            const next = { ...prev };
+            for (const act of res.actions) {
+              next[act.ai_action_id] = act;
+            }
+            return next;
+          });
+        }
+      } catch (err: unknown) {
+        setBatchErrorById((prev) => ({
+          ...prev,
+          [batchId]:
+            err instanceof AnalystApiError
+              ? err.message
+              : 'Unable to cancel proposed changes right now.',
+        }));
+      } finally {
+        setBatchProcessingId(null);
+      }
+    },
+    [batchProcessingId]
+  );
+
+  const submitFeedback = useCallback(
+    async (messageId: string, queryId: string, rating: 'up' | 'down') => {
+      await submitAiFeedback(queryId, rating);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.message_id === messageId ? { ...m, feedback: rating } : m
+        )
+      );
+    },
+    []
+  );
+
   const resetConversation = useCallback(() => {
     setConversationId(null);
     setMessages([]);
     setActionsMap({});
     setError(null);
     setActionErrorById({});
+    setBatchErrorById({});
     setDataVersionChanged(false);
   }, []);
 
@@ -464,10 +609,17 @@ export function useGrowthAnalystSession(
     error,
     actionProcessingId,
     actionErrorById,
+    batchProcessingId,
+    batchErrorById,
+    quota,
     permissionProfile,
     sendMessage,
     confirmAction,
     cancelAction,
+    confirmBatch,
+    cancelBatch,
+    submitFeedback,
+    refreshQuota,
     resetConversation,
     dismissError: () => setError(null),
     clearDataVersionChanged: () => setDataVersionChanged(false),

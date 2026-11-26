@@ -152,6 +152,32 @@ export interface OpportunityStageTransitionPayload {
   loss_reason?: string | null;
 }
 
+export type PaymentTermsCode = 'standard_50_50' | '100_upfront' | 'custom';
+
+export interface ConfirmOpportunityLinePayload {
+  considerationType: 'cash' | 'in_kind';
+  value: number;
+  assetId?: string | null;
+  priceId?: string | null;
+}
+
+export interface ConfirmOpportunityPayload {
+  signedAt: string;
+  paymentTerms: PaymentTermsCode;
+  signatoryContactId?: string | null;
+  documentUri?: string | null;
+  lines: ConfirmOpportunityLinePayload[];
+  signedValueTotal: number;
+}
+
+export interface InventoryAssetOption {
+  asset_id: string;
+  edition_id: string;
+  asset_type: string;
+  slots_total?: number | null;
+  is_premium?: boolean;
+}
+
 /**
  * Canonical PROPOSAL entity (01_conceptual_data_model.md §4C)
  */

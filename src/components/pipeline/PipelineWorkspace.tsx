@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSeason } from '../../contexts/SeasonContext';
 import { isHistoricalReadOnlyEdition } from '../../lib/dateIst';
@@ -25,6 +26,7 @@ import type {
 } from '../../types/pipeline';
 import type { CategoryEntity, UserPermissionContext } from '../../types/sponsors';
 import type { PreviewStateMode } from '../overview/OverviewHeaderFilters';
+import { ConfirmOpportunityDrawer } from './ConfirmOpportunityDrawer';
 import { OpportunityDetailView } from './OpportunityDetailView';
 import { OpportunityFormDrawer } from './OpportunityFormDrawer';
 import { OpportunityStageDrawer } from './OpportunityStageDrawer';
@@ -47,6 +49,7 @@ export function PipelineWorkspace({
 }: PipelineWorkspaceProps) {
   const { editionId, recordClass, asOf, setEditionAndClass, setAsOf } =
     useSeason();
+  const queryClient = useQueryClient();
 
   const [filters, setFilters] = useState<PipelineFilters>(() => ({
     search: '',
@@ -103,6 +106,10 @@ export function PipelineWorkspace({
 
   const [stageDrawerOpen, setStageDrawerOpen] = useState(false);
   const [stageOpportunity, setStageOpportunity] =
+    useState<OpportunityEntity | null>(null);
+
+  const [confirmDrawerOpen, setConfirmDrawerOpen] = useState(false);
+  const [confirmOpportunityTarget, setConfirmOpportunityTarget] =
     useState<OpportunityEntity | null>(null);
 
   useEffect(() => {
@@ -269,7 +276,8 @@ export function PipelineWorkspace({
   const invalidateAll = useCallback(() => {
     setPreviewMode('default');
     setReloadNonce((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
 
   const isHistoricalReadOnly = isHistoricalReadOnlyEdition(
     filters.edition_id,
@@ -300,6 +308,11 @@ export function PipelineWorkspace({
             if (isHistoricalReadOnly) return;
             setStageOpportunity(opportunity);
             setStageDrawerOpen(true);
+          }}
+          onConfirmDeal={(opportunity) => {
+            if (isHistoricalReadOnly) return;
+            setConfirmOpportunityTarget(opportunity);
+            setConfirmDrawerOpen(true);
           }}
           onOpenSponsor={onOpenSponsor}
           onOpenCampaign={onOpenCampaign}
@@ -376,6 +389,21 @@ export function PipelineWorkspace({
           if (updated && selectedOpportunityId === updated.opportunity_id) {
             setSelectedOpportunitySeed(updated);
           }
+          invalidateAll();
+        }}
+      />
+
+      <ConfirmOpportunityDrawer
+        open={confirmDrawerOpen}
+        opportunity={confirmOpportunityTarget}
+        onClose={() => {
+          setConfirmDrawerOpen(false);
+          setConfirmOpportunityTarget(null);
+        }}
+        onConfirmed={() => {
+          setConfirmDrawerOpen(false);
+          setConfirmOpportunityTarget(null);
+          setSelectedOpportunitySeed(null);
           invalidateAll();
         }}
       />

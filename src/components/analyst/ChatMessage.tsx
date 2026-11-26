@@ -1,4 +1,12 @@
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  ThumbsDown,
+  ThumbsUp,
+} from 'lucide-react';
+import { useState } from 'react';
 import {
   formatAiRouteLabel,
   formatRecordClassLabel,
@@ -23,6 +31,11 @@ interface ChatMessageProps {
   onRequestConfirmAction: (action: AiActionRecord) => void;
   onCancelAction: (actionId: string) => void;
   onOpenRecord?: (recordType: string, recordId: string) => void;
+  onSubmitFeedback?: (
+    messageId: string,
+    queryId: string,
+    rating: 'up' | 'down'
+  ) => Promise<void> | void;
   compact?: boolean;
 }
 
@@ -36,8 +49,11 @@ export function ChatMessage({
   onRequestConfirmAction,
   onCancelAction,
   onOpenRecord,
+  onSubmitFeedback,
   compact = false,
 }: ChatMessageProps) {
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -72,6 +88,8 @@ export function ChatMessage({
           (a) => actionsById[a.ai_action_id] ?? a
         );
 
+  const toolCalls = structured?.tool_calls ?? [];
+
   return (
     <article className="rounded-md border border-[#D9D7D0] bg-white p-4 sm:p-5">
       {/* Header metadata line (unboxed typography, zero pill badges) */}
@@ -95,13 +113,21 @@ export function ChatMessage({
         </div>
 
         <div className="flex items-center gap-2 font-mono">
+          {structured?.cached ? (
+            <span className="text-[#315F52]">
+              cached, data v{String(structured.data_version ?? '—')}
+            </span>
+          ) : structured?.shortcut ? (
+            <span className="text-[#315F52]">metric card shortcut</span>
+          ) : null}
           {structured?.data_refreshed ? (
             <span className="inline-flex items-center gap-1 text-[#315F52]">
               <RefreshCw className="h-3 w-3" aria-hidden="true" />
               Data refreshed
             </span>
           ) : null}
-          {structured?.data_version !== undefined &&
+          {!structured?.cached &&
+          structured?.data_version !== undefined &&
           structured?.data_version !== null ? (
             <span>v{String(structured.data_version)}</span>
           ) : null}
@@ -112,6 +138,46 @@ export function ChatMessage({
       <div className="mt-3 text-[13px] leading-relaxed text-[#202824]">
         <p className="whitespace-pre-wrap">{message.content}</p>
       </div>
+
+      {/* Collapsed tool steps accordion */}
+      {toolCalls.length > 0 ? (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setToolsExpanded((prev) => !prev)}
+            aria-expanded={toolsExpanded}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-[#788C83] hover:text-[#202824]"
+          >
+            {toolsExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>Tool steps ({toolCalls.length})</span>
+          </button>
+          {toolsExpanded ? (
+            <ul className="mt-1.5 space-y-1 rounded border border-[#E8E6E0] bg-[#FAF9F6] px-3 py-2 font-mono text-[11px] text-[#525E58]">
+              {toolCalls.map((tc, idx) => (
+                <li key={`${tc.tool_call_id}-${idx}`} className="flex items-baseline justify-between gap-2">
+                  <span className="truncate">
+                    {tc.tool_name}
+                    {tc.summary ? ` — ${tc.summary}` : ''}
+                  </span>
+                  <span
+                    className={
+                      tc.status === 'error' || tc.status === 'denied'
+                        ? 'text-[#9B3B32]'
+                        : 'text-[#315F52]'
+                    }
+                  >
+                    {tc.status ?? 'ok'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Grounding / verification notice if flagged */}
       {integrity && !integrity.valid ? (
@@ -146,7 +212,7 @@ export function ChatMessage({
         </div>
       ) : null}
 
-      {/* Expandable citations */}
+      {/* Interactive citation chips + drawer */}
       {structured?.citations && structured.citations.length > 0 ? (
         <div className="mt-4">
           <CitationList citations={structured.citations} compact={compact} />
@@ -169,6 +235,51 @@ export function ChatMessage({
               compact={compact}
             />
           ))}
+        </div>
+      ) : null}
+
+      {/* Thumbs up / down feedback */}
+      {structured?.query_id && onSubmitFeedback ? (
+        <div className="mt-3 flex items-center justify-end gap-1.5 border-t border-[#E8E6E0] pt-2.5">
+          <span className="mr-1 text-[11px] text-[#788C83]">Helpful?</span>
+          <button
+            type="button"
+            aria-label="Mark answer helpful"
+            aria-pressed={message.feedback === 'up'}
+            onClick={() =>
+              void onSubmitFeedback(
+                message.message_id,
+                structured.query_id!,
+                'up'
+              )
+            }
+            className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${
+              message.feedback === 'up'
+                ? 'border-[#315F52] bg-[#EBF1EE] text-[#315F52]'
+                : 'border-[#D9D7D0] bg-white text-[#525E58] hover:bg-[#FAF9F6] hover:text-[#202824]'
+            }`}
+          >
+            <ThumbsUp className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label="Mark answer not helpful"
+            aria-pressed={message.feedback === 'down'}
+            onClick={() =>
+              void onSubmitFeedback(
+                message.message_id,
+                structured.query_id!,
+                'down'
+              )
+            }
+            className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${
+              message.feedback === 'down'
+                ? 'border-[#9B3B32] bg-[#FDF5F4] text-[#9B3B32]'
+                : 'border-[#D9D7D0] bg-white text-[#525E58] hover:bg-[#FAF9F6] hover:text-[#202824]'
+            }`}
+          >
+            <ThumbsDown className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
         </div>
       ) : null}
 

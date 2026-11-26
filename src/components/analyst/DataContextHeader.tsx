@@ -2,9 +2,10 @@ import { RotateCcw } from 'lucide-react';
 import {
   ANALYST_EDITION_BY_CLASS,
   ANALYST_RECORD_CLASS_OPTIONS,
+  formatRecordClassLabel,
 } from '../../services/analystApi';
 import type { GrowthAnalystSessionFilterState } from '../../hooks/useGrowthAnalystSession';
-import type { AiRecordClass } from '../../types/analyst';
+import type { AiQuotaInfo, AiRecordClass } from '../../types/analyst';
 import { SelectControl } from '../ui/SelectControl';
 
 interface DataContextHeaderProps {
@@ -13,6 +14,7 @@ interface DataContextHeaderProps {
   onChangeEdition: (editionId: string) => void;
   onChangeAsOf: (asOf: string) => void;
   dataVersion: string | number | null;
+  quota: AiQuotaInfo | null;
   conversationId: string | null;
   onResetConversation: () => void;
   pendingActionCount: number;
@@ -26,6 +28,7 @@ export function DataContextHeader({
   onChangeEdition,
   onChangeAsOf,
   dataVersion,
+  quota,
   conversationId,
   onResetConversation,
   pendingActionCount,
@@ -33,16 +36,33 @@ export function DataContextHeader({
   onChangeMobilePanel,
 }: DataContextHeaderProps) {
   const editionOptions = ANALYST_EDITION_BY_CLASS[filters.record_class];
+  const remainingLabel =
+    quota?.exhausted
+      ? 'AI requests left today: 0 (resets 05:30 IST)'
+      : quota && typeof quota.remaining === 'number'
+        ? `AI requests left today: ${quota.remaining}`
+        : 'AI requests left today: —';
 
   return (
     <header className="border-b border-[#D9D7D0] pb-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-[28px] font-semibold leading-tight tracking-[-0.025em] text-[#202824]">
-            Growth Analyst
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-[28px] font-semibold leading-tight tracking-[-0.025em] text-[#202824]">
+              Growth Analyst
+            </h1>
+            <span className="rounded border border-[#D9D7D0] bg-[#FAF9F6] px-2 py-0.5 font-mono text-[11px] font-medium text-[#315F52]">
+              {filters.edition_id} · {formatRecordClassLabel(filters.record_class)}
+            </span>
+          </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[#788C83]">
-            <span>{filters.edition_id}</span>
+            <span
+              className={
+                quota?.exhausted ? 'font-medium text-[#9B3B32]' : 'text-[#525E58]'
+              }
+            >
+              {remainingLabel}
+            </span>
             <span aria-hidden="true">·</span>
             <span>As of {filters.as_of}</span>
             {dataVersion !== null && dataVersion !== undefined ? (

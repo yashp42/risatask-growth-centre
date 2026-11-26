@@ -1,10 +1,13 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSeason } from '../../contexts/SeasonContext';
 import { isHistoricalReadOnlyEdition } from '../../lib/dateIst';
 import {
+  cancelInvoice,
   CollectionsApiError,
   fetchCollectionsWorkspaceData,
   getCollectionsPermissionProfile,
+  reconcileReceipt,
   type CollectionsWorkspaceData,
 } from '../../services/collectionsApi';
 import {
@@ -15,10 +18,12 @@ import type {
   CollectionsContractRow,
   CollectionsFilters,
   CollectionsSummaryState,
+  ReceiptRecord,
 } from '../../types/collections';
 import type { ApiErrorInfo, DataLoadStatus } from '../../types/overview';
 import type { UserPermissionContext } from '../../types/sponsors';
 import type { PreviewStateMode } from '../overview/OverviewHeaderFilters';
+import { AllocateReceiptDrawer } from './AllocateReceiptDrawer';
 import { CollectionsWorkspacePage } from './CollectionsWorkspacePage';
 import { InvoiceFormDrawer } from './InvoiceFormDrawer';
 import { PaymentScheduleFormDrawer } from './PaymentScheduleFormDrawer';
@@ -63,6 +68,7 @@ export function CollectionsWorkspace({
   onOpenSponsor,
   onOpenOpportunity,
 }: CollectionsWorkspaceProps) {
+  const queryClient = useQueryClient();
   const { editionId, recordClass, asOf, setEditionAndClass, setAsOf } =
     useSeason();
 
@@ -87,6 +93,10 @@ export function CollectionsWorkspace({
   const [status, setStatus] = useState<DataLoadStatus>('loading');
   const [data, setData] = useState<CollectionsWorkspaceData>(EMPTY_DATA);
   const [error, setError] = useState<ApiErrorInfo | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [reconcilingReceiptId, setReconcilingReceiptId] = useState<string | null>(
+    null
+  );
 
   const [scheduleDrawerOpen, setScheduleDrawerOpen] = useState(false);
   const [scheduleDefaultContractId, setScheduleDefaultContractId] = useState<
@@ -102,6 +112,9 @@ export function CollectionsWorkspace({
   const [receiptDefaultSponsorId, setReceiptDefaultSponsorId] = useState<
     string | null
   >(null);
+
+  const [allocateDrawerReceipt, setAllocateDrawerReceipt] =
+    useState<ReceiptRecord | null>(null);
 
   const [termsDrawerContract, setTermsDrawerContract] =
     useState<CollectionsContractRow | null>(null);
@@ -208,14 +221,56 @@ export function CollectionsWorkspace({
 
   const invalidateAll = useCallback(() => {
     setPreviewMode('default');
+    setActionError(null);
     setReloadNonce((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries();
+  }, [queryClient]);
 
   const writableRecordClass: 'simulated' | 'live' =
     filters.record_class === 'live' ? 'live' : 'simulated';
   const isHistoricalReadOnly = isHistoricalReadOnlyEdition(
     filters.edition_id,
     filters.record_class
+  );
+
+  const handleReconcileReceipt = useCallback(
+    async (receiptId: string) => {
+      if (isHistoricalReadOnly) return;
+      setActionError(null);
+      setReconcilingReceiptId(receiptId);
+      try {
+        await reconcileReceipt(
+          filters.edition_id,
+          receiptId,
+          permissionProfile
+        );
+        invalidateAll();
+      } catch (err: unknown) {
+        setActionError(
+          err instanceof CollectionsApiError
+            ? err.message
+            : 'Unable to reconcile receipt.'
+        );
+      } finally {
+        setReconcilingReceiptId(null);
+      }
+    },
+    [filters.edition_id, invalidateAll, isHistoricalReadOnly, permissionProfile]
+  );
+
+  const handleCancelInvoice = useCallback(
+    async (invoiceId: string, reason: string) => {
+      if (isHistoricalReadOnly) return;
+      setActionError(null);
+      await cancelInvoice(
+        filters.edition_id,
+        invoiceId,
+        reason,
+        permissionProfile
+      );
+      invalidateAll();
+    },
+    [filters.edition_id, invalidateAll, isHistoricalReadOnly, permissionProfile]
   );
 
   return (
@@ -234,6 +289,9 @@ export function CollectionsWorkspace({
         permissionProfile={permissionProfile}
         status={status}
         error={error}
+        actionError={actionError}
+        onDismissActionError={() => setActionError(null)}
+        reconcilingReceiptId={reconcilingReceiptId}
         onRetry={invalidateAll}
         onRefresh={invalidateAll}
         onOpenScheduleDrawer={(contractId) => {
@@ -251,6 +309,14 @@ export function CollectionsWorkspace({
           setReceiptDefaultSponsorId(sponsorId ?? null);
           setReceiptDrawerOpen(true);
         }}
+        onOpenAllocateDrawer={(receipt) => {
+          if (isHistoricalReadOnly) return;
+          setAllocateDrawerReceipt(receipt);
+        }}
+        onReconcileReceipt={(receiptId) => {
+          void handleReconcileReceipt(receiptId);
+        }}
+        onCancelInvoice={handleCancelInvoice}
         onOpenPaymentTermsDrawer={(contract) => {
           if (isHistoricalReadOnly) return;
           setTermsDrawerContract(contract);
@@ -322,6 +388,23 @@ export function CollectionsWorkspace({
         onClose={() => setTermsDrawerContract(null)}
         onUpdated={() => {
           setTermsDrawerContract(null);
+          invalidateAll();
+        }}
+      />
+
+      <AllocateReceiptDrawer
+        open={Boolean(allocateDrawerReceipt)}
+        receipt={allocateDrawerReceipt}
+        contracts={data.contracts}
+        paymentSchedules={data.paymentSchedules}
+        invoices={data.invoices}
+        existingAllocations={data.allocations}
+        activeEditionId={filters.edition_id}
+        activeRecordClass={writableRecordClass}
+        permissionProfile={permissionProfile}
+        onClose={() => setAllocateDrawerReceipt(null)}
+        onAllocated={() => {
+          setAllocateDrawerReceipt(null);
           invalidateAll();
         }}
       />

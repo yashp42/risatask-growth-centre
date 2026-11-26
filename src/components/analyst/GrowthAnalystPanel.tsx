@@ -97,6 +97,9 @@ export function GrowthAnalystPanel({
               <p className="truncate font-mono text-[11px] text-[#788C83]">
                 {currentView.label} ·{' '}
                 {formatRecordClassLabel(session.filters.record_class)}
+                {session.quota && typeof session.quota.remaining === 'number'
+                  ? ` · AI requests left today: ${session.quota.remaining}`
+                  : ''}
               </p>
             </div>
           </div>
@@ -169,6 +172,7 @@ export function GrowthAnalystPanel({
                   onClose();
                   onOpenRecord?.(type, id);
                 }}
+                onSubmitFeedback={session.submitFeedback}
                 compact
               />
             ))

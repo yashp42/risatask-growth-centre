@@ -4,6 +4,7 @@ import {
   type AiActionRecord,
   type AiActionResolutionResponse,
   type AiActionStatus,
+  type AiBatchResolutionResponse,
   type AiChatMessage,
   type AiChatRequest,
   type AiCitation,
@@ -11,10 +12,12 @@ import {
   type AiLinkedRecordSummary,
   type AiNumberReference,
   type AiPermissionProfile,
+  type AiQuotaInfo,
   type AiRecordClass,
   type AiResponseIntegrityCheck,
   type AiStructuredResponse,
   type AiToolCallTrace,
+  type AiViewSpec,
   type AllowedAiActionType,
 } from '../types/analyst';
 import type { MetricQueryResult } from '../types/campaigns';
@@ -83,12 +86,46 @@ export function formatAiActionType(actionType: AllowedAiActionType | string): st
   switch (actionType) {
     case 'create_task':
       return 'Create task';
+    case 'update_task':
+      return 'Update task';
     case 'log_interaction':
       return 'Log interaction';
     case 'log_meeting':
       return 'Log meeting';
     case 'upsert_sponsor_contact':
       return 'Create or update sponsor contact';
+    case 'create_sponsor':
+      return 'Create sponsor';
+    case 'update_sponsor':
+      return 'Update sponsor';
+    case 'change_owner':
+      return 'Change owner';
+    case 'create_contact':
+      return 'Create contact';
+    case 'update_contact':
+      return 'Update contact';
+    case 'create_campaign':
+      return 'Create campaign';
+    case 'update_campaign':
+      return 'Update campaign';
+    case 'log_outreach':
+      return 'Log outreach';
+    case 'record_qualification':
+      return 'Record qualification';
+    case 'create_opportunity':
+      return 'Create opportunity';
+    case 'update_opportunity':
+      return 'Update opportunity';
+    case 'change_stage':
+      return 'Change opportunity stage';
+    case 'confirm_deal':
+      return 'Confirm deal';
+    case 'log_time':
+      return 'Log hours';
+    case 'create_network_partner':
+      return 'Create network partner';
+    case 'record_referral':
+      return 'Record referral';
     default:
       return String(actionType).replace(/_/g, ' ');
   }
@@ -311,28 +348,65 @@ export function canUserConfirmActionType(
   }
   switch (action.action_type) {
     case 'create_task':
+    case 'update_task':
+    case 'log_time':
       return profile.canConfirmTaskAction
         ? { allowed: true }
         : {
             allowed: false,
-            reason: 'Viewer accounts cannot create tasks.',
+            reason: 'Viewer accounts cannot create or update execution records.',
+          };
+    case 'confirm_deal':
+      return profile.roles.includes('coordination_lead')
+        ? { allowed: true }
+        : {
+            allowed: false,
+            reason: 'Confirming deals requires the coordination lead role.',
+          };
+    case 'create_campaign':
+    case 'update_campaign':
+      return profile.roles.includes('coordination_lead') ||
+        profile.roles.includes('pipeline_ops')
+        ? { allowed: true }
+        : {
+            allowed: false,
+            reason: 'Managing campaigns requires coordination lead or pipeline ops.',
           };
     case 'log_interaction':
     case 'log_meeting':
+    case 'log_outreach':
+    case 'record_qualification':
+    case 'create_opportunity':
+    case 'update_opportunity':
+    case 'change_stage':
+    case 'create_network_partner':
+    case 'record_referral':
       return profile.canConfirmInteractionOrMeeting
         ? { allowed: true }
         : {
             allowed: false,
             reason:
-              'Logging interactions or meetings requires a sales, pipeline ops, or coordination lead role.',
+              'This change requires a sales, pipeline ops, or coordination lead role.',
           };
     case 'upsert_sponsor_contact':
+    case 'create_sponsor':
+    case 'update_sponsor':
+    case 'change_owner':
+    case 'create_contact':
+    case 'update_contact':
       return profile.canConfirmSponsorContactUpsert
         ? { allowed: true }
         : {
             allowed: false,
             reason:
-              'Updating sponsor contacts requires a sales, pipeline ops, or coordination lead role.',
+              'Updating sponsor records requires a sales, pipeline ops, or coordination lead role.',
+          };
+    default:
+      return profile.canConfirmInteractionOrMeeting
+        ? { allowed: true }
+        : {
+            allowed: false,
+            reason: 'Your role cannot confirm this operational change.',
           };
   }
 }
@@ -398,11 +472,18 @@ function normalizeActionRecord(raw: Record<string, unknown>): AiActionRecord | n
 
   return {
     ai_action_id: String(raw.ai_action_id ?? raw.id ?? ''),
+    batch_id:
+      (raw.batch_id as string | null | undefined) ??
+      (rawPayload.batch_id as string | null | undefined) ??
+      null,
     query_id: (raw.query_id as string | null | undefined) ?? null,
     action_type: actionType,
     permission_level: String(raw.permission_level ?? 'L5'),
     payload: redactSensitivePreviewFields(rawPayload),
-    payload_hash: (raw.payload_hash as string | null | undefined) ?? null,
+    payload_hash:
+      (raw.payload_hash as string | null | undefined) ??
+      (raw.payload_sha256 as string | null | undefined) ??
+      null,
     status: (raw.status as AiActionStatus) ?? 'proposed',
     permission_allowed:
       typeof raw.permission_allowed === 'boolean'
@@ -411,7 +492,21 @@ function normalizeActionRecord(raw: Record<string, unknown>): AiActionRecord | n
     permission_reason:
       (raw.permission_reason as string | null | undefined) ?? null,
     affected_summary:
-      (raw.affected_summary as string | null | undefined) ?? null,
+      (raw.affected_summary as string | null | undefined) ??
+      (rawPayload.affected_summary as string | null | undefined) ??
+      null,
+    impacted_note:
+      (raw.impacted_note as string | null | undefined) ??
+      (rawPayload.impacted_note as string | null | undefined) ??
+      null,
+    before_snapshot:
+      (raw.before_snapshot as Record<string, unknown> | null | undefined) ??
+      (rawPayload.before as Record<string, unknown> | null | undefined) ??
+      null,
+    after_snapshot:
+      (raw.after_snapshot as Record<string, unknown> | null | undefined) ??
+      (rawPayload.after as Record<string, unknown> | null | undefined) ??
+      null,
     linked_sponsor_id:
       (raw.linked_sponsor_id as string | null | undefined) ??
       (rawPayload.sponsor_id as string | null | undefined) ??
@@ -465,6 +560,10 @@ function normalizeStructuredResponse(
       title: obj.title ? sanitizeUntrustedText(obj.title) : null,
       doc_id: (obj.doc_id as string | null | undefined) ?? null,
       chunk_id: (obj.chunk_id as string | null | undefined) ?? null,
+      chunk_text:
+        obj.chunk_text || obj.text
+          ? sanitizeUntrustedText(obj.chunk_text ?? obj.text)
+          : null,
       section: obj.section ? sanitizeUntrustedText(obj.section) : null,
       source_id: (obj.source_id as string | null | undefined) ?? null,
       source_type: (obj.source_type as string | null | undefined) ?? null,
@@ -553,8 +652,19 @@ function normalizeStructuredResponse(
     data_version:
       (raw.data_version as string | number | null | undefined) ?? null,
     data_refreshed: Boolean(raw.data_refreshed),
+    answer_check_passed:
+      typeof raw.answer_check_passed === 'boolean'
+        ? raw.answer_check_passed
+        : undefined,
     answer_check_status:
       (raw.answer_check_status as string | null | undefined) ?? null,
+    cached: Boolean(raw.cached),
+    shortcut: Boolean(raw.shortcut),
+    quota: (raw.quota as AiQuotaInfo | null | undefined) ?? null,
+    view_spec: (raw.view_spec as AiViewSpec | null | undefined) ?? null,
+    model_id: (raw.model_id as string | null | undefined) ?? null,
+    latency_ms:
+      typeof raw.latency_ms === 'number' ? raw.latency_ms : null,
   };
 }
 
@@ -616,9 +726,11 @@ export async function sendAnalystChatMessage(
   request: AiChatRequest,
   signal?: AbortSignal
 ): Promise<AiStructuredResponse> {
+  const trimmed = request.message.trim();
   const payload = {
     conversation_id: request.conversation_id || undefined,
-    message: request.message.trim(),
+    question: trimmed,
+    message: trimmed,
     record_class: request.record_class,
     edition_id: request.edition_id,
     as_of: request.as_of,
@@ -626,7 +738,7 @@ export async function sendAnalystChatMessage(
   };
 
   const raw = await requestJson<Record<string, unknown>>(
-    OVERVIEW_API_ENDPOINTS.aiChat,
+    OVERVIEW_API_ENDPOINTS.aiAsk,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -635,6 +747,246 @@ export async function sendAnalystChatMessage(
   );
 
   return normalizeStructuredResponse(raw);
+}
+
+export async function fetchAiQuota(
+  signal?: AbortSignal
+): Promise<AiQuotaInfo | null> {
+  try {
+    return await requestJson<AiQuotaInfo>(OVERVIEW_API_ENDPOINTS.aiQuota, {
+      signal,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function submitAiFeedback(
+  queryId: string,
+  rating: 'up' | 'down',
+  comment?: string,
+  signal?: AbortSignal
+): Promise<{ query_id: string; rating: 'up' | 'down' }> {
+  return requestJson<{ query_id: string; rating: 'up' | 'down' }>(
+    OVERVIEW_API_ENDPOINTS.aiFeedback,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        query_id: queryId,
+        rating,
+        comment: comment?.trim() || undefined,
+      }),
+      signal,
+    }
+  );
+}
+
+const METRIC_SHORTCUT_MAP: ReadonlyArray<{
+  patterns: ReadonlyArray<RegExp>;
+  metricId: string;
+  label: string;
+}> = [
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? cash collected(?: before fest)?\??$/i,
+      /^cash collected(?: before fest)?\??$/i,
+      /^m-?01\??$/i,
+    ],
+    metricId: 'M-01',
+    label: 'Cash collected before fest (M-01)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? signed(?: sponsorship)? value\??$/i,
+      /^signed(?: sponsorship)? value\??$/i,
+      /^m-?02\??$/i,
+    ],
+    metricId: 'M-02',
+    label: 'Signed sponsorship value (M-02)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? signed cash(?: value)?\??$/i,
+      /^signed cash(?: value)?\??$/i,
+      /^m-?03\??$/i,
+    ],
+    metricId: 'M-03',
+    label: 'Signed cash value (M-03)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? in-?kind value\??$/i,
+      /^in-?kind value\??$/i,
+      /^m-?04\??$/i,
+    ],
+    metricId: 'M-04',
+    label: 'In-kind value (M-04)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? collection rate\??$/i,
+      /^collection rate\??$/i,
+      /^m-?06\??$/i,
+    ],
+    metricId: 'M-06',
+    label: 'Collection rate (M-06)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? outstanding cash\??$/i,
+      /^outstanding cash\??$/i,
+      /^m-?07\??$/i,
+    ],
+    metricId: 'M-07',
+    label: 'Outstanding cash (M-07)',
+  },
+  {
+    patterns: [
+      /^what(?:'s| is)?(?: our| the)? open pipeline(?: value)?\??$/i,
+      /^open pipeline(?: value)?\??$/i,
+      /^m-?21\??$/i,
+    ],
+    metricId: 'M-21',
+    label: 'Open pipeline value (M-21)',
+  },
+];
+
+export async function tryResolveMetricShortcut(
+  request: AiChatRequest,
+  signal?: AbortSignal
+): Promise<AiStructuredResponse | null> {
+  const normalized = request.message.trim().replace(/\s+/g, ' ');
+  if (normalized.length === 0 || normalized.length > 64) return null;
+
+  const matched = METRIC_SHORTCUT_MAP.find((entry) =>
+    entry.patterns.some((re) => re.test(normalized))
+  );
+  if (!matched) return null;
+
+  const res = await requestJson<{ results?: MetricQueryResult[] }>(
+    OVERVIEW_API_ENDPOINTS.metricsQuery,
+    {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        metricIds: [matched.metricId],
+        editionId: request.edition_id,
+        recordClass: request.record_class,
+        asOf: request.as_of,
+        filters: request.filters ?? {},
+      }),
+    }
+  );
+
+  const row = res.results?.[0];
+  if (!row) return null;
+
+  const formattedVal = row.computable
+    ? formatAnalyticsMetricValue(row)
+    : `Not computable — ${row.reason || 'Underlying data is unavailable for this scope.'}`;
+
+  const answer = row.computable
+    ? `${matched.label} is ${formattedVal} (${request.edition_id}, as of ${row.as_of || request.as_of}) [${row.metric_id}].`
+    : `${matched.label} is not computable: ${row.reason || 'Underlying data is unavailable for this scope.'} [${row.metric_id}].`;
+
+  return {
+    conversation_id: request.conversation_id || `shortcut-${Date.now()}`,
+    query_id: null,
+    route: 'sql',
+    answer,
+    numbers_used: [],
+    citations: [
+      {
+        type: 'metric',
+        id: row.metric_id,
+        title: matched.label,
+        record_class: row.record_class,
+        data_version: row.data_version ?? null,
+        definition_version: row.definition_version ?? null,
+      },
+    ],
+    data_labels: [
+      `${request.edition_id} · ${row.record_class}`,
+      `As of ${row.as_of || request.as_of}`,
+      ...(row.data_version !== undefined && row.data_version !== null
+        ? [`Data v${String(row.data_version)}`]
+        : []),
+    ],
+    action_ids: [],
+    actions: [],
+    metric_results: [row],
+    tool_calls: [
+      {
+        tool_call_id: `shortcut-${matched.metricId}`,
+        tool_name: 'get_metric',
+        status: 'ok',
+        record_class: row.record_class,
+        data_version: row.data_version ?? null,
+        summary: `${matched.metricId} (metric card shortcut · 0 AI calls)`,
+        metric_result: row,
+      },
+    ],
+    record_class: row.record_class,
+    edition_id: request.edition_id,
+    as_of: row.as_of || request.as_of,
+    data_version: row.data_version ?? null,
+    answer_check_passed: true,
+    answer_check_status: 'verified',
+    shortcut: true,
+    cached: false,
+  };
+}
+
+export async function confirmAiActionBatch(
+  batchId: string,
+  signal?: AbortSignal
+): Promise<AiBatchResolutionResponse> {
+  const raw = await requestJson<Record<string, unknown>>(
+    OVERVIEW_API_ENDPOINTS.aiBatchConfirm(batchId),
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+      signal,
+    }
+  );
+  const rawActions = Array.isArray(raw.actions) ? raw.actions : [];
+  const actions = rawActions
+    .map((a) => normalizeActionRecord((a ?? {}) as Record<string, unknown>))
+    .filter((a): a is AiActionRecord => a !== null);
+  return {
+    batch_id: String(raw.batch_id ?? batchId),
+    applied_count: Number(raw.applied_count ?? actions.length ?? 0),
+    data_version:
+      (raw.data_version as string | number | null | undefined) ?? null,
+    audit_ids: Array.isArray(raw.audit_ids)
+      ? raw.audit_ids.map((id) => String(id))
+      : [],
+    actions,
+    message: raw.message ? sanitizeUntrustedText(raw.message) : null,
+  };
+}
+
+export async function cancelAiActionBatch(
+  batchId: string,
+  signal?: AbortSignal
+): Promise<{ batch_id: string; actions: AiActionRecord[]; message?: string | null }> {
+  const raw = await requestJson<Record<string, unknown>>(
+    OVERVIEW_API_ENDPOINTS.aiBatchCancel(batchId),
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+      signal,
+    }
+  );
+  const rawActions = Array.isArray(raw.actions) ? raw.actions : [];
+  const actions = rawActions
+    .map((a) => normalizeActionRecord((a ?? {}) as Record<string, unknown>))
+    .filter((a): a is AiActionRecord => a !== null);
+  return {
+    batch_id: String(raw.batch_id ?? batchId),
+    actions,
+    message: raw.message ? sanitizeUntrustedText(raw.message) : null,
+  };
 }
 
 export async function fetchAnalystConversation(

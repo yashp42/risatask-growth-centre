@@ -10,9 +10,12 @@ import { ChatComposer } from './ChatComposer';
 import { ChatMessage } from './ChatMessage';
 
 const INVESTIGATION_STARTERS: ReadonlyArray<string> = [
+  'What is our signed value vs the approved base target?',
   'Which campaign is leaking the most qualified leads?',
   'How much cash did we collect in 2025?',
-  'What is our signed value vs the approved base target?',
+  'Which signed partnerships still have outstanding cash?',
+  'What is our T-55 base target in D-009?',
+  'How much cash have we collected before fest?',
 ];
 
 interface GrowthAnalystChatProps {
@@ -32,6 +35,11 @@ interface GrowthAnalystChatProps {
   onRequestConfirmAction: (action: AiActionRecord) => void;
   onCancelAction: (actionId: string) => void;
   onOpenRecord?: (recordType: string, recordId: string) => void;
+  onSubmitFeedback?: (
+    messageId: string,
+    queryId: string,
+    rating: 'up' | 'down'
+  ) => Promise<void> | void;
   compact?: boolean;
 }
 
@@ -52,6 +60,7 @@ export function GrowthAnalystChat({
   onRequestConfirmAction,
   onCancelAction,
   onOpenRecord,
+  onSubmitFeedback,
   compact = false,
 }: GrowthAnalystChatProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -131,6 +140,7 @@ export function GrowthAnalystChat({
                 onRequestConfirmAction={onRequestConfirmAction}
                 onCancelAction={onCancelAction}
                 onOpenRecord={onOpenRecord}
+                onSubmitFeedback={onSubmitFeedback}
                 compact={compact}
               />
             ))}
