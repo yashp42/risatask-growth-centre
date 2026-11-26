@@ -1,0 +1,8 @@
+{
+  "name": "latet Sponsorship Growth Platform",
+  "description": "Editorial sponsorship management and growth intelligence workspace for college festival sponsorship teams.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
